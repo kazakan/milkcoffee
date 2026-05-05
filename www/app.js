@@ -137,7 +137,10 @@ document.getElementById('upload-btn').addEventListener('click', () => fileInput.
 let dragDepth = 0;
 document.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; document.body.classList.add('drag-over'); });
 document.addEventListener('dragover',  e => { e.preventDefault(); });
-document.addEventListener('dragleave', () => { if (--dragDepth === 0) document.body.classList.remove('drag-over'); });
+document.addEventListener('dragleave', () => {
+  if (dragDepth > 0) dragDepth--;
+  if (dragDepth === 0) document.body.classList.remove('drag-over');
+});
 document.addEventListener('drop', e => {
   e.preventDefault();
   dragDepth = 0;
