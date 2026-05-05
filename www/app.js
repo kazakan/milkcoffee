@@ -12,11 +12,7 @@
 import initWasm, { alloc, dealloc, process as wasmProcess }
   from './pkg/milkcoffee_wasm.js';
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-const MAX_WIDTH = 1280;
-
 // ─── DOM refs ────────────────────────────────────────────────────────────────
-const dropZone     = document.getElementById('drop-zone');
 const fileInput    = document.getElementById('file-input');
 const methodSel    = document.getElementById('method');
 const strengthSldr = document.getElementById('strength');
@@ -137,13 +133,18 @@ async function detectFaces(bitmap, imgW, imgH) {
 }
 
 // ─── File upload / drop ───────────────────────────────────────────────────────
-dropZone.addEventListener('click',    () => fileInput.click());
-dropZone.addEventListener('keydown',  e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-dropZone.addEventListener('dragleave',() => dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', e => {
+document.getElementById('upload-btn').addEventListener('click', () => fileInput.click());
+let dragDepth = 0;
+document.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; document.body.classList.add('drag-over'); });
+document.addEventListener('dragover',  e => { e.preventDefault(); });
+document.addEventListener('dragleave', () => {
+  if (dragDepth > 0) dragDepth--;
+  if (dragDepth === 0) document.body.classList.remove('drag-over');
+});
+document.addEventListener('drop', e => {
   e.preventDefault();
-  dropZone.classList.remove('drag-over');
+  dragDepth = 0;
+  document.body.classList.remove('drag-over');
   const file = e.dataTransfer?.files[0];
   if (file) loadFile(file);
 });
@@ -161,13 +162,8 @@ async function loadFile(file) {
     showOverlay('Loading image…');
     const bitmap = await createImageBitmap(file);
 
-    // Resize if wider than MAX_WIDTH.
-    let w = bitmap.width;
-    let h = bitmap.height;
-    if (w > MAX_WIDTH) {
-      h = Math.round(h * MAX_WIDTH / w);
-      w = MAX_WIDTH;
-    }
+    const w = bitmap.width;
+    const h = bitmap.height;
 
     currentImage = { bitmap, width: w, height: h };
 
