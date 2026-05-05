@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MilkCoffee – Face Anonymiser</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+      background: linear-gradient(90deg, #a78bfa, #60a5fa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      font-size: 0.875rem;
+      color: #888;
+      margin-bottom: 2rem;
+    }
+
+    .card {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 1rem;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 860px;
+      margin-bottom: 1.25rem;
+    }
+
+    /* ---- Upload zone ---- */
+    #drop-zone {
+      border: 2px dashed #0f3460;
+      border-radius: 0.75rem;
+      padding: 2.5rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    #drop-zone:hover, #drop-zone.drag-over {
+      border-color: #a78bfa;
+      background: rgba(167, 139, 250, 0.06);
+    }
+    #drop-zone svg { margin-bottom: 0.75rem; opacity: 0.5; }
+    #drop-zone p { color: #888; font-size: 0.9rem; }
+    #drop-zone p strong { color: #a78bfa; }
+    #file-input { display: none; }
+
+    /* ---- Controls ---- */
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      align-items: flex-end;
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      flex: 1 1 180px;
+    }
+    label {
+      font-size: 0.8rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    select, input[type=range] {
+      background: #0f3460;
+      color: #e0e0e0;
+      border: 1px solid #1e4080;
+      border-radius: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.9rem;
+      width: 100%;
+    }
+    select:focus { outline: 2px solid #a78bfa; }
+    input[type=range] {
+      padding: 0.25rem 0;
+      cursor: pointer;
+      accent-color: #a78bfa;
+    }
+    .strength-value {
+      font-size: 0.8rem;
+      color: #a78bfa;
+      text-align: right;
+    }
+
+    /* ---- Action buttons ---- */
+    .actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    button {
+      flex: 1 1 120px;
+      padding: 0.65rem 1.25rem;
+      border: none;
+      border-radius: 0.6rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+    button:not(:disabled):hover { opacity: 0.88; }
+    button:not(:disabled):active { transform: scale(0.97); }
+    #btn-process {
+      background: linear-gradient(135deg, #a78bfa, #60a5fa);
+      color: #fff;
+    }
+    #btn-download {
+      background: #0f3460;
+      color: #e0e0e0;
+      border: 1px solid #1e4080;
+    }
+
+    /* ---- Status ---- */
+    #status {
+      font-size: 0.85rem;
+      min-height: 1.4em;
+      color: #a78bfa;
+      padding: 0.25rem 0;
+    }
+    #status.error { color: #f87171; }
+    #status.ok    { color: #4ade80; }
+
+    /* ---- Canvas ---- */
+    .canvas-wrap {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      background: #0a0a1a;
+      border-radius: 0.75rem;
+      overflow: hidden;
+      min-height: 120px;
+    }
+    #preview {
+      max-width: 100%;
+      display: block;
+      image-rendering: pixelated;
+    }
+    #canvas-placeholder {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: #333;
+      font-size: 0.85rem;
+      pointer-events: none;
+    }
+    #loading-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(10,10,26,0.7);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 0.5rem;
+      color: #a78bfa;
+      font-size: 0.9rem;
+    }
+    #loading-overlay.visible { display: flex; }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid #1e4080;
+      border-top-color: #a78bfa;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>MilkCoffee</h1>
+  <p class="subtitle">Client-side face anonymisation · Rust + WebAssembly</p>
+
+  <!-- Upload -->
+  <div class="card">
+    <div id="drop-zone" role="button" tabindex="0" aria-label="Upload image">
+      <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"
+           fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <p>Drop a <strong>JPG / PNG</strong> here or <strong>click to browse</strong></p>
+      <p style="margin-top:0.35rem;font-size:0.75rem;">Images wider than 1280 px are auto-resized</p>
+    </div>
+    <input type="file" id="file-input" accept="image/jpeg,image/png" />
+  </div>
+
+  <!-- Controls -->
+  <div class="card">
+    <div class="controls">
+      <div class="control-group">
+        <label for="method">Anonymisation method</label>
+        <select id="method">
+          <option value="0">🔲 Mosaic (pixelation)</option>
+          <option value="1">🌫 Blur (box blur)</option>
+          <option value="2">⬛ Solid mask</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label for="strength">Strength</label>
+        <input type="range" id="strength" min="0" max="100" value="60" />
+        <div class="strength-value" id="strength-val">0.60</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="card">
+    <div class="actions">
+      <button id="btn-process" disabled>Detect &amp; Anonymise</button>
+      <button id="btn-download" disabled>⬇ Download result</button>
+    </div>
+    <p id="status" style="margin-top:0.75rem;">Loading WASM &amp; face-detection model…</p>
+  </div>
+
+  <!-- Preview -->
+  <div class="card">
+    <div class="canvas-wrap">
+      <canvas id="preview"></canvas>
+      <div id="canvas-placeholder">Upload an image to get started</div>
+      <div id="loading-overlay">
+        <div class="spinner"></div>
+        <span id="loading-text">Processing…</span>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
