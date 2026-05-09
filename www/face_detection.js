@@ -1,13 +1,20 @@
-export const DETECTION_MODEL_ASSET_PATH =
-  'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector/float16/1/face_detector.task';
+export const DETECTION_MODEL_ASSET_PATHS = [
+  'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector_short_range/float16/1/face_detector_short_range.task',
+  'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector_short_range/float16/latest/face_detector_short_range.task',
+  'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector/float16/1/face_detector.task',
+];
+export const DETECTION_MODEL_ASSET_PATH = DETECTION_MODEL_ASSET_PATHS[0];
 export const DETECTION_SCALES = [1, 1.5, 2];
 export const DETECTION_SCORE_THRESHOLD = 0.35;
 export const DETECTION_PADDING = 0.18;
 
-export function createFaceDetectorOptions(runningMode = 'IMAGE') {
+export function createFaceDetectorOptions(
+  runningMode = 'IMAGE',
+  modelAssetPath = DETECTION_MODEL_ASSET_PATH
+) {
   return {
     baseOptions: {
-      modelAssetPath: DETECTION_MODEL_ASSET_PATH,
+      modelAssetPath,
       delegate: 'CPU',
     },
     runningMode,
@@ -15,12 +22,24 @@ export function createFaceDetectorOptions(runningMode = 'IMAGE') {
 }
 
 export async function loadFaceDetectors(FaceDetector, vision, runningMode = 'IMAGE') {
-  return [
-    await FaceDetector.createFromOptions(
-      vision,
-      createFaceDetectorOptions(runningMode)
-    ),
-  ];
+  let lastError = null;
+
+  for (const modelAssetPath of DETECTION_MODEL_ASSET_PATHS) {
+    try {
+      return [
+        await FaceDetector.createFromOptions(
+          vision,
+          createFaceDetectorOptions(runningMode, modelAssetPath)
+        ),
+      ];
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    `Failed to fetch model from known URLs. Last error: ${lastError?.message ?? 'Unknown error'}`
+  );
 }
 
 export function createDetectionCanvas(bitmap, width, height, scale = 1) {
