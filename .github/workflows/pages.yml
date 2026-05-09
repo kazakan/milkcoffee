@@ -38,7 +38,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install wasm-bindgen-cli (exact version matching Cargo.lock)
-        run: cargo install wasm-bindgen-cli --version 0.2.120 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
 
       - name: Build WASM & generate JS bindings
         run: bash build.sh
