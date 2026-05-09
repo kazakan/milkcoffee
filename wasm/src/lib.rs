@@ -24,12 +24,15 @@ pub fn dealloc(ptr: u32, size: u32) {
 }
 
 /// Anonymization methods.
-/// 0 = mosaic (pixelation), 1 = box blur, 2 = solid mask
+/// 0 = mosaic (pixelation), 1 = box blur, 2 = solid mask,
+/// 3 = cyber veil, 4 = neon blocks
 #[repr(u8)]
 enum Method {
     Mosaic = 0,
     Blur = 1,
     Solid = 2,
+    Cyber = 3,
+    Neon = 4,
 }
 
 impl From<u8> for Method {
@@ -37,19 +40,44 @@ impl From<u8> for Method {
         match v {
             1 => Method::Blur,
             2 => Method::Solid,
+            3 => Method::Cyber,
+            4 => Method::Neon,
             _ => Method::Mosaic,
         }
     }
+}
+
+fn region_bounds(img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> Option<(u32, u32, u32, u32)> {
+    let x0 = rx.min(img_w);
+    let y0 = ry.min(img_h);
+    let x1 = rx.saturating_add(rw).min(img_w);
+    let y1 = ry.saturating_add(rh).min(img_h);
+    if x0 >= x1 || y0 >= y1 {
+        None
+    } else {
+        Some((x0, y0, x1, y1))
+    }
+}
+
+fn blend_channel(base: u8, overlay: u8, alpha: f32) -> u8 {
+    let alpha = alpha.clamp(0.0, 1.0);
+    ((base as f32 * (1.0 - alpha)) + (overlay as f32 * alpha)).round() as u8
+}
+
+fn apply_overlay(pixels: &mut [u8], idx: usize, color: [u8; 3], alpha: f32) {
+    pixels[idx] = blend_channel(pixels[idx], color[0], alpha);
+    pixels[idx + 1] = blend_channel(pixels[idx + 1], color[1], alpha);
+    pixels[idx + 2] = blend_channel(pixels[idx + 2], color[2], alpha);
+    pixels[idx + 3] = 255;
 }
 
 /// Apply mosaic (pixelation) to a rectangular region.
 /// `block` is the block size in pixels.
 fn apply_mosaic(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, block: u32) {
     let block = block.max(1);
-    let x_end = (rx + rw).min(img_w);
-    let y_end = (ry + rh).min(img_h);
-    let rx = rx.min(img_w);
-    let ry = ry.min(img_h);
+    let Some((rx, ry, x_end, y_end)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+        return;
+    };
 
     let mut by = ry;
     while by < y_end {
@@ -98,10 +126,9 @@ fn apply_mosaic(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw:
 /// `radius` is the blur radius in pixels.
 fn apply_blur(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, radius: u32) {
     let radius = radius.max(1);
-    let x_end = (rx + rw).min(img_w);
-    let y_end = (ry + rh).min(img_h);
-    let rx = rx.min(img_w);
-    let ry = ry.min(img_h);
+    let Some((rx, ry, x_end, y_end)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+        return;
+    };
 
     // We need a temp buffer for the region to avoid reading already-written pixels.
     let region_w = (x_end - rx) as usize;
@@ -151,10 +178,9 @@ fn apply_blur(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u
 
 /// Fill a rectangular region with a solid colour (black by default).
 fn apply_solid(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32) {
-    let x_end = (rx + rw).min(img_w);
-    let y_end = (ry + rh).min(img_h);
-    let rx = rx.min(img_w);
-    let ry = ry.min(img_h);
+    let Some((rx, ry, x_end, y_end)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+        return;
+    };
     for py in ry..y_end {
         for px in rx..x_end {
             let idx = (py * img_w + px) as usize * 4;
@@ -166,6 +192,93 @@ fn apply_solid(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: 
     }
 }
 
+fn apply_cyber(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, strength: f32) {
+    let Some((rx, ry, x_end, y_end)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+        return;
+    };
+    let grid = (14.0 - strength * 8.0).round().max(4.0) as u32;
+    let scanline = (6.0 - strength * 3.0).round().max(2.0) as u32;
+
+    for py in ry..y_end {
+        for px in rx..x_end {
+            let idx = (py * img_w + px) as usize * 4;
+            pixels[idx] = ((pixels[idx] as f32) * 0.12) as u8;
+            pixels[idx + 1] = ((pixels[idx + 1] as f32) * 0.16) as u8;
+            pixels[idx + 2] = ((pixels[idx + 2] as f32) * 0.22) as u8;
+            pixels[idx + 3] = 255;
+
+            let local_x = px - rx;
+            let local_y = py - ry;
+            if local_x % grid == 0 || local_y % grid == 0 {
+                apply_overlay(pixels, idx, [0, 255, 255], 0.78);
+            } else if local_y % scanline == 0 {
+                apply_overlay(pixels, idx, [255, 0, 160], 0.42);
+            } else if ((local_x + local_y) / scanline.max(1)) % 2 == 0 {
+                apply_overlay(pixels, idx, [70, 0, 110], 0.18);
+            }
+        }
+    }
+
+    let border = 2u32;
+    for py in ry..y_end {
+        for px in rx..x_end {
+            let on_border = px < rx + border || px >= x_end.saturating_sub(border)
+                || py < ry + border || py >= y_end.saturating_sub(border);
+            if on_border {
+                let idx = (py * img_w + px) as usize * 4;
+                apply_overlay(pixels, idx, [255, 64, 188], 0.85);
+            }
+        }
+    }
+}
+
+fn apply_neon(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, block: u32) {
+    let Some((rx, ry, x_end, y_end)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+        return;
+    };
+    let block = block.max(3);
+    let palette = [
+        [8u8, 12u8, 28u8],
+        [0u8, 255u8, 255u8],
+        [255u8, 0u8, 153u8],
+        [255u8, 214u8, 10u8],
+        [124u8, 58u8, 237u8],
+    ];
+
+    let mut by = ry;
+    while by < y_end {
+        let block_h = (by + block).min(y_end) - by;
+        let mut bx = rx;
+        while bx < x_end {
+            let block_w = (bx + block).min(x_end) - bx;
+            let mut luminance_total = 0u32;
+            let mut count = 0u32;
+            for dy in 0..block_h {
+                for dx in 0..block_w {
+                    let idx = ((by + dy) * img_w + (bx + dx)) as usize * 4;
+                    luminance_total += pixels[idx] as u32 + pixels[idx + 1] as u32 + pixels[idx + 2] as u32;
+                    count += 1;
+                }
+            }
+            let avg_luma = if count == 0 { 0 } else { luminance_total / (count * 3) };
+            let palette_idx = (((avg_luma / 52) + ((bx - rx) / block) + ((by - ry) / block)) as usize) % palette.len();
+            let color = palette[palette_idx];
+
+            for dy in 0..block_h {
+                for dx in 0..block_w {
+                    let idx = ((by + dy) * img_w + (bx + dx)) as usize * 4;
+                    let edge = dx == 0 || dy == 0 || dx + 1 == block_w || dy + 1 == block_h;
+                    let alpha = if edge { 0.9 } else { 0.7 };
+                    apply_overlay(pixels, idx, color, alpha);
+                }
+            }
+
+            bx += block;
+        }
+        by += block;
+    }
+}
+
 /// Process the image in-place.
 ///
 /// Parameters:
@@ -174,7 +287,7 @@ fn apply_solid(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: 
 ///   height   – image height in pixels
 ///   boxes_js – JSON array of face bounding boxes:
 ///              `[{"x":N,"y":N,"width":N,"height":N}, ...]`
-///   method   – 0 = mosaic, 1 = blur, 2 = solid
+///   method   – 0 = mosaic, 1 = blur, 2 = solid, 3 = cyber veil, 4 = neon blocks
 ///   strength – 0.0 .. 1.0 (controls block size / blur radius)
 #[wasm_bindgen]
 pub fn process(ptr: u32, width: u32, height: u32, boxes_js: &str, method: u8, strength: f32) {
@@ -202,6 +315,14 @@ pub fn process(ptr: u32, width: u32, height: u32, boxes_js: &str, method: u8, st
             }
             Method::Solid => {
                 apply_solid(pixels, width, height, bx, by, bw, bh);
+            }
+            Method::Cyber => {
+                apply_cyber(pixels, width, height, bx, by, bw, bh, strength);
+            }
+            Method::Neon => {
+                let max_block = ((bw.min(bh) / 3).max(6)) as f32;
+                let block = (6.0 + strength * (max_block - 6.0)).round() as u32;
+                apply_neon(pixels, width, height, bx, by, bw, bh, block);
             }
         }
     }
