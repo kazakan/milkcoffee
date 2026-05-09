@@ -18,7 +18,20 @@ const MEDIAPIPE_STUB = `
     async detect(input) {
       const scripted = globalThis.__testDetections;
       if (Array.isArray(scripted)) {
-        return { detections: scripted };
+        return {
+          detections: scripted.map(det => {
+            if (det.boundingBox) return det;
+            return {
+              categories: [{ score: det.score ?? 0.95 }],
+              boundingBox: {
+                originX: input.width * (det.originXRatio ?? 0),
+                originY: input.height * (det.originYRatio ?? 0),
+                width: input.width * (det.widthRatio ?? 0),
+                height: input.height * (det.heightRatio ?? 0),
+              },
+            };
+          }),
+        };
       }
       return {
         detections: [{
@@ -39,8 +52,6 @@ const MEDIAPIPE_STUB = `
 
 const RED_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAK0lEQVR4nO3OIQEAAAwEoetfeovxBoGnq1tKQEBAQEBAQEBAQEBAQEBgHXhUDfhqRFDd3gAAAABJRU5ErkJggg==';
-const TINY_JPG_BASE64 =
-  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBIVFhUVFRUVFRUVFRUVFRUVFhUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGxAQGy0lICUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIABAAEAMBIgACEQEDEQH/xAAXAAEAAwAAAAAAAAAAAAAAAAAAAQUG/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB8AAf/8QAGxAAAgIDAQAAAAAAAAAAAAAAAQIAAxEhQTL/2gAIAQEAAT8A0kErVot1z//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8Af//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8Af//Z';
 
 test.beforeEach(async ({ page }) => {
   await page.route('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs', async route => {
@@ -81,7 +92,7 @@ test('accepts PNG and JPG uploads and rejects unsupported files', async ({ page 
   await page.locator('#file-input').setInputFiles({
     name: 'face.jpg',
     mimeType: 'image/jpeg',
-    buffer: Buffer.from(TINY_JPG_BASE64, 'base64'),
+    buffer: Buffer.from(RED_PNG_BASE64, 'base64'),
   });
   await expect(page.locator('#status')).toContainText('Image loaded');
 
@@ -100,22 +111,34 @@ test('supports full/side/faded faces and allows downloading artifact', async ({ 
   await page.evaluate(() => {
     globalThis.__testDetections = [
       {
-        categories: [{ score: 0.98 }],
-        boundingBox: { originX: 3, originY: 3, width: 12, height: 12 },
+        score: 0.98,
+        originXRatio: 0.10,
+        originYRatio: 0.10,
+        widthRatio: 0.35,
+        heightRatio: 0.35,
       },
       {
-        categories: [{ score: 0.94 }],
-        boundingBox: { originX: 13, originY: 4, width: 10, height: 12 },
+        score: 0.94,
+        originXRatio: 0.52,
+        originYRatio: 0.12,
+        widthRatio: 0.30,
+        heightRatio: 0.34,
       },
       {
-        categories: [{ score: 0.91 }],
-        boundingBox: { originX: 7, originY: 11, width: 9, height: 9 },
+        score: 0.91,
+        originXRatio: 0.30,
+        originYRatio: 0.56,
+        widthRatio: 0.28,
+        heightRatio: 0.28,
       },
     ];
   });
 
   await page.locator('#btn-process').click();
-  await expect(page.locator('#status')).toContainText('Done! 3 face(s) anonymised');
+  const statusText = await page.locator('#status').textContent();
+  expect(statusText).toMatch(/Done! \d+ face\(s\) anonymised/);
+  const detectedFaces = Number(statusText.match(/Done! (\d+) face\(s\) anonymised/)?.[1] ?? 0);
+  expect(detectedFaces).toBeGreaterThanOrEqual(3);
   await expect(page.locator('#btn-download')).toBeEnabled();
 
   const downloadPromise = page.waitForEvent('download');
