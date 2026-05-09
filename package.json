@@ -1,0 +1,27 @@
+{
+  "name": "milkcoffee",
+  "version": "1.0.0",
+  "description": "> Client-side face anonymisation — **Rust + WebAssembly**, zero-copy single-buffer design.",
+  "main": "index.js",
+  "scripts": {
+    "test:unit": "node --test tests/unit/**/*.test.mjs",
+    "test:integration": "playwright test",
+    "test": "npm run test:unit && npm run test:integration"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kazakan/milkcoffee.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/kazakan/milkcoffee/issues"
+  },
+  "homepage": "https://github.com/kazakan/milkcoffee#readme",
+  "devDependencies": {
+    "@playwright/test": "1.59.1"
+  },
+  "private": true
+}

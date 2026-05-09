@@ -22,6 +22,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
       - name: Install Rust + wasm32 target
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -40,8 +49,17 @@ jobs:
       - name: Install wasm-bindgen-cli (exact version matching Cargo.lock)
         run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
 
+      - name: Run Rust unit tests
+        run: cargo test --manifest-path wasm/Cargo.toml
+
       - name: Build WASM & generate JS bindings
         run: bash build.sh
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run frontend tests
+        run: npm test
 
       # Prevent Jekyll from ignoring files that start with _ and from
       # trying to process the wasm-bindgen output.
