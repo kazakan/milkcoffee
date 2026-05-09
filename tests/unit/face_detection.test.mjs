@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 
 import {
   DETECTION_MODEL_ASSET_PATH,
+  DETECTION_MODEL_ASSET_PATHS,
   createFaceDetectorOptions,
   detectFaces,
+  loadFaceDetectors,
   mergeBoxes,
 } from '../../www/face_detection.js';
 
@@ -14,7 +16,32 @@ test('createFaceDetectorOptions uses the MediaPipe task model', () => {
   assert.equal(options.runningMode, 'IMAGE');
   assert.equal(options.baseOptions.delegate, 'CPU');
   assert.equal(options.baseOptions.modelAssetPath, DETECTION_MODEL_ASSET_PATH);
-  assert.match(options.baseOptions.modelAssetPath, /face_detector\.task$/);
+  assert.match(options.baseOptions.modelAssetPath, /face_detector.*\.task$/);
+});
+
+test('createFaceDetectorOptions allows overriding model URL', () => {
+  const options = createFaceDetectorOptions('VIDEO', 'https://example.com/custom.task');
+  assert.equal(options.runningMode, 'VIDEO');
+  assert.equal(options.baseOptions.modelAssetPath, 'https://example.com/custom.task');
+});
+
+test('loadFaceDetectors falls back to next model URL when first URL fails', async () => {
+  const calls = [];
+  const detectorInstance = { detect: async () => ({ detections: [] }) };
+  const FaceDetector = {
+    async createFromOptions(_vision, options) {
+      calls.push(options.baseOptions.modelAssetPath);
+      if (calls.length === 1) {
+        throw new Error('404');
+      }
+      return detectorInstance;
+    },
+  };
+
+  const detectors = await loadFaceDetectors(FaceDetector, {}, 'IMAGE');
+  assert.equal(detectors.length, 1);
+  assert.equal(detectors[0], detectorInstance);
+  assert.deepEqual(calls, DETECTION_MODEL_ASSET_PATHS.slice(0, 2));
 });
 
 test('mergeBoxes merges overlaps and clamps expanded bounds', () => {
