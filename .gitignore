@@ -6,3 +6,7 @@ wasm/target/
 .idea/
 *.swp
 *.swo
+
+node_modules/
+playwright-report/
+test-results/

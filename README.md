@@ -65,6 +65,7 @@ milkcoffee/
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli
+npm install
 ```
 
 ### Build
@@ -81,6 +82,12 @@ python3 -m http.server --directory www 8080
 ```
 
 > **Note:** The app uses ES modules (`<script type="module">`), so it must be served over HTTP (not opened as a `file://` URL).
+
+### Tests
+
+```bash
+npm test
+```
 
 ## Anonymisation methods
 

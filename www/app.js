@@ -11,6 +11,7 @@
 
 import initWasm, { alloc, dealloc, process as wasmProcess }
   from './pkg/milkcoffee_wasm.js';
+import { detectFaces, loadFaceDetectors } from './face_detection.js';
 
 // ─── DOM refs ────────────────────────────────────────────────────────────────
 const fileInput    = document.getElementById('file-input');
@@ -27,23 +28,6 @@ const loadingText  = document.getElementById('loading-text');
 
 const ctx = canvas.getContext('2d');
 const METHOD_NAMES = ['mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks'];
-const DETECTION_MODELS = [
-  {
-    label: 'short-range',
-    modelAssetPath:
-      'https://storage.googleapis.com/mediapipe-models/face_detector/' +
-      'blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
-  },
-  {
-    label: 'full-range',
-    modelAssetPath:
-      'https://storage.googleapis.com/mediapipe-models/face_detector/' +
-      'blaze_face_full_range/float16/1/blaze_face_full_range.tflite',
-  },
-];
-const DETECTION_SCALES = [1, 1.5, 2];
-const DETECTION_SCORE_THRESHOLD = 0.35;
-const DETECTION_PADDING = 0.18;
 
 // ─── App state ───────────────────────────────────────────────────────────────
 let wasmMemory   = null;   // WebAssembly.Memory (exported from WASM module)
@@ -106,122 +90,7 @@ async function loadFaceDetector() {
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
   );
 
-  faceDetectors = await Promise.all(
-    DETECTION_MODELS.map(model =>
-      FaceDetector.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: model.modelAssetPath,
-          delegate: 'CPU',
-        },
-        runningMode: 'IMAGE',
-      })
-    )
-  );
-}
-
-function createDetectionCanvas(bitmap, width, height, scale = 1) {
-  const scaledW = Math.max(1, Math.round(width * scale));
-  const scaledH = Math.max(1, Math.round(height * scale));
-  const detectionCanvas = document.createElement('canvas');
-  detectionCanvas.width = scaledW;
-  detectionCanvas.height = scaledH;
-  detectionCanvas.getContext('2d').drawImage(bitmap, 0, 0, scaledW, scaledH);
-  return detectionCanvas;
-}
-
-function expandBox(box, imgW, imgH, padding = DETECTION_PADDING) {
-  const padX = Math.round(box.width * padding);
-  const padY = Math.round(box.height * padding);
-  const x = Math.max(0, box.x - padX);
-  const y = Math.max(0, box.y - padY);
-  const right = Math.min(imgW, box.x + box.width + padX);
-  const bottom = Math.min(imgH, box.y + box.height + padY);
-
-  return {
-    x,
-    y,
-    width: Math.max(1, right - x),
-    height: Math.max(1, bottom - y),
-  };
-}
-
-function intersectionOverUnion(a, b) {
-  const x1 = Math.max(a.x, b.x);
-  const y1 = Math.max(a.y, b.y);
-  const x2 = Math.min(a.x + a.width, b.x + b.width);
-  const y2 = Math.min(a.y + a.height, b.y + b.height);
-  const overlapW = Math.max(0, x2 - x1);
-  const overlapH = Math.max(0, y2 - y1);
-  const intersection = overlapW * overlapH;
-
-  if (intersection === 0) return 0;
-
-  const union = a.width * a.height + b.width * b.height - intersection;
-  return union > 0 ? intersection / union : 0;
-}
-
-function mergeBoxes(boxes, imgW, imgH) {
-  const merged = [];
-
-  for (const box of boxes) {
-    let current = box;
-    let didMerge = true;
-
-    while (didMerge) {
-      didMerge = false;
-      for (let i = 0; i < merged.length; i++) {
-        const other = merged[i];
-        if (intersectionOverUnion(current, other) >= 0.3) {
-          const x = Math.min(current.x, other.x);
-          const y = Math.min(current.y, other.y);
-          const right = Math.max(current.x + current.width, other.x + other.width);
-          const bottom = Math.max(current.y + current.height, other.y + other.height);
-          current = {
-            x,
-            y,
-            width: right - x,
-            height: bottom - y,
-          };
-          merged.splice(i, 1);
-          didMerge = true;
-          break;
-        }
-      }
-    }
-
-    merged.push(expandBox(current, imgW, imgH));
-  }
-
-  return merged;
-}
-
-/**
- * Run face detection on an ImageBitmap and return bounding boxes as
- * [{x, y, width, height}] in absolute pixel coordinates.
- */
-async function detectFaces(bitmap, imgW, imgH) {
-  if (faceDetectors.length === 0) return [];
-
-  const detections = [];
-
-  for (const detector of faceDetectors) {
-    for (const scale of DETECTION_SCALES) {
-      const result = detector.detect(createDetectionCanvas(bitmap, imgW, imgH, scale));
-      for (const det of result.detections || []) {
-        const score = det.categories?.[0]?.score ?? 1;
-        const bb = det.boundingBox;
-        if (!bb || score < DETECTION_SCORE_THRESHOLD) continue;
-        detections.push({
-          x: Math.round(bb.originX / scale),
-          y: Math.round(bb.originY / scale),
-          width: Math.round(bb.width / scale),
-          height: Math.round(bb.height / scale),
-        });
-      }
-    }
-  }
-
-  return mergeBoxes(detections, imgW, imgH).filter(box => box.width > 0 && box.height > 0);
+  faceDetectors = await loadFaceDetectors(FaceDetector, vision, 'IMAGE');
 }
 
 // ─── File upload / drop ───────────────────────────────────────────────────────
@@ -298,7 +167,7 @@ async function processImage() {
     const imageData = offCtx.getImageData(0, 0, w, h);
 
     // ── Step 2: Face detection (JS side) ─────────────────────────────────────
-    const boxes = await detectFaces(bitmap, w, h);
+    const boxes = await detectFaces({ bitmap, imgW: w, imgH: h, faceDetectors });
     const boxCount = boxes.length;
 
     loadingText.textContent = `Found ${boxCount} face(s). Anonymising…`;
