@@ -23,7 +23,7 @@ export function dealloc(ptr: number, size: number): void;
  *   height   – image height in pixels
  *   boxes_js – JSON array of face bounding boxes:
  *              `[{"x":N,"y":N,"width":N,"height":N}, ...]`
- *   method   – 0 = mosaic, 1 = blur, 2 = solid
+ *   method   – 0 = mosaic, 1 = blur, 2 = solid, 3 = cyber veil, 4 = neon blocks
  *   strength – 0.0 .. 1.0 (controls block size / blur radius)
  */
 export function process(ptr: number, width: number, height: number, boxes_js: string, method: number, strength: number): void;
