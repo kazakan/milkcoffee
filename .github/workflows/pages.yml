@@ -55,6 +55,13 @@ jobs:
       - name: Build WASM & generate JS bindings
         run: bash build.sh
 
+      - name: Download face detector model
+        run: |
+          mkdir -p www/models
+          curl -fsSL \
+            'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' \
+            -o www/models/face_detector.tflite
+
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
