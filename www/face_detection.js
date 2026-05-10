@@ -1,4 +1,11 @@
+// Absolute URL for the self-hosted model downloaded during CI build.
+// Using import.meta.url ensures correct resolution regardless of how
+// the MediaPipe library internally resolves relative paths.
+const _selfHostedModel = new URL('./models/face_detector.tflite', import.meta.url).href;
+
 export const DETECTION_MODEL_ASSET_PATHS = [
+  _selfHostedModel,
+  'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
   'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector_short_range/float16/1/face_detector_short_range.task',
   'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector_short_range/float16/latest/face_detector_short_range.task',
   'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector/float16/1/face_detector.task',

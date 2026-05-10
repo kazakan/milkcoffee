@@ -80,7 +80,7 @@ test('initializes wasm + AI model and processes image on all viewports', async (
   const visionWasmUrl = await page.evaluate(() => globalThis.__visionWasmUrl);
   expect(visionWasmUrl).toContain('/tasks-vision@0.10.14/wasm');
   const detectorModelPath = await page.evaluate(() => globalThis.__detectorOptions?.[0]?.baseOptions?.modelAssetPath);
-  expect(detectorModelPath).toMatch(/face_detector.*\.task$/);
+  expect(detectorModelPath).toMatch(/face_detector.*\.(task|tflite)$/);
 });
 
 test('accepts PNG and JPG uploads and rejects unsupported files', async ({ page }) => {

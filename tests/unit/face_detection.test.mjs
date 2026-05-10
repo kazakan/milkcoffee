@@ -16,7 +16,7 @@ test('createFaceDetectorOptions uses the MediaPipe task model', () => {
   assert.equal(options.runningMode, 'IMAGE');
   assert.equal(options.baseOptions.delegate, 'CPU');
   assert.equal(options.baseOptions.modelAssetPath, DETECTION_MODEL_ASSET_PATH);
-  assert.match(options.baseOptions.modelAssetPath, /face_detector.*\.task$/);
+  assert.match(options.baseOptions.modelAssetPath, /face_detector.*\.(task|tflite)$/);
 });
 
 test('createFaceDetectorOptions allows overriding model URL', () => {

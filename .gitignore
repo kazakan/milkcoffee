@@ -10,3 +10,4 @@ wasm/target/
 node_modules/
 playwright-report/
 test-results/
+www/models/
