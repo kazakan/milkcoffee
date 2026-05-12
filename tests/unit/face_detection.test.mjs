@@ -78,7 +78,7 @@ test('detectFaces normalizes scaled detections and filters low-confidence hits',
               boundingBox: { originX: 10, originY: 20, width: 30, height: 20 },
             },
             {
-              categories: [{ score: 0.2 }],
+              categories: [{ score: 0.19 }],
               boundingBox: { originX: 1, originY: 1, width: 5, height: 5 },
             },
           ],
@@ -118,12 +118,12 @@ test('detectFaces normalizes scaled detections and filters low-confidence hits',
 });
 
 test('detection constants have expected sensitivity and range', () => {
-  assert.ok(DETECTION_SCORE_THRESHOLD <= 0.3, 'threshold should be low enough to catch faded faces');
-  assert.ok(DETECTION_SCALES.length >= 4, 'should have at least 4 scale steps');
-  assert.ok(Math.max(...DETECTION_SCALES) >= 2.5, 'max scale should be at least 2.5 for small faces');
-  assert.ok(DETECTION_TILE_SIZE >= 512, 'tile size should be at least 512 for crowd detection');
-  assert.ok(DETECTION_TILE_THRESHOLD <= 1000, 'tiling should activate for moderately large images');
-  assert.ok(DETECTION_MAX_CANVAS_DIM >= 1024, 'canvas cap should allow meaningful upscaling');
+  assert.ok(DETECTION_SCORE_THRESHOLD <= 0.2, 'threshold should be low enough to catch distant tiny faces');
+  assert.ok(DETECTION_SCALES.length >= 6, 'should have several scale steps for tiny-face recovery');
+  assert.ok(Math.max(...DETECTION_SCALES) >= 4, 'max scale should be at least 4x for very small faces');
+  assert.ok(DETECTION_TILE_SIZE <= 640, 'tile size should stay compact enough to enlarge tiny faces');
+  assert.ok(DETECTION_TILE_THRESHOLD <= 800, 'tiling should activate for medium-to-large images');
+  assert.ok(DETECTION_MAX_CANVAS_DIM >= 2048, 'canvas cap should allow strong upscaling');
 });
 
 test('detectFaces runs tile-based detection for large images', async () => {

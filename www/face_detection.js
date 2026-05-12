@@ -11,16 +11,16 @@ export const DETECTION_MODEL_ASSET_PATHS = [
   'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector/float16/1/face_detector.task',
 ];
 export const DETECTION_MODEL_ASSET_PATH = DETECTION_MODEL_ASSET_PATHS[0];
-// Extra scales (2.5, 3) help detect small faces in small-to-medium images.
-export const DETECTION_SCALES = [1, 1.5, 2, 2.5, 3];
-// Lower threshold catches faded, partially occluded, or distant faces.
-export const DETECTION_SCORE_THRESHOLD = 0.25;
+// Extra scales (3.5, 4) help detect very small faces in small-to-medium images.
+export const DETECTION_SCALES = [1, 1.5, 2, 2.5, 3, 3.5, 4];
+// Lower threshold catches faded, partially occluded, or distant tiny faces.
+export const DETECTION_SCORE_THRESHOLD = 0.2;
 export const DETECTION_PADDING = 0.18;
 // Tile-based detection constants – used for large images (crowds, high-res photos).
-export const DETECTION_TILE_SIZE = 640;
-export const DETECTION_TILE_OVERLAP = 0.2;
+export const DETECTION_TILE_SIZE = 512;
+export const DETECTION_TILE_OVERLAP = 0.3;
 // Images with any dimension above this threshold also receive a tiled detection pass.
-export const DETECTION_TILE_THRESHOLD = 800;
+export const DETECTION_TILE_THRESHOLD = 640;
 
 export function createFaceDetectorOptions(
   runningMode = 'IMAGE',
@@ -57,9 +57,9 @@ export async function loadFaceDetectors(FaceDetector, vision, runningMode = 'IMA
 }
 
 // Maximum canvas dimension for scale-based detection passes.  Keeping this
-// at 2048 prevents allocating enormous canvases for high-resolution source
-// images while still providing useful upscaling for smaller images.
-export const DETECTION_MAX_CANVAS_DIM = 2048;
+// at 3072 prevents allocating enormous canvases for high-resolution source
+// images while still providing stronger upscaling for tiny-face detection.
+export const DETECTION_MAX_CANVAS_DIM = 3072;
 
 export function createDetectionCanvas(bitmap, width, height, scale = 1) {
   const scaledW = Math.max(1, Math.round(width * scale));
@@ -97,6 +97,19 @@ export function expandBox(box, imgW, imgH, padding = DETECTION_PADDING) {
     y,
     width: Math.max(1, right - x),
     height: Math.max(1, bottom - y),
+  };
+}
+
+function clampBox(box, imgW, imgH) {
+  const x = Math.max(0, Math.min(imgW, box.x));
+  const y = Math.max(0, Math.min(imgH, box.y));
+  const right = Math.max(x, Math.min(imgW, box.x + box.width));
+  const bottom = Math.max(y, Math.min(imgH, box.y + box.height));
+  return {
+    x,
+    y,
+    width: right - x,
+    height: bottom - y,
   };
 }
 
@@ -182,12 +195,14 @@ export async function detectFaces({
         // the canvas was capped.
         const effectiveScaleX = input.width / imgW;
         const effectiveScaleY = input.height / imgH;
-        detections.push({
+        const clamped = clampBox({
           x: Math.round(bb.originX / effectiveScaleX),
           y: Math.round(bb.originY / effectiveScaleY),
           width: Math.round(bb.width / effectiveScaleX),
           height: Math.round(bb.height / effectiveScaleY),
-        });
+        }, imgW, imgH);
+        if (clamped.width <= 0 || clamped.height <= 0) continue;
+        detections.push(clamped);
       }
     }
   }
@@ -208,12 +223,14 @@ export async function detectFaces({
             const score = det.categories?.[0]?.score ?? 1;
             const bb = det.boundingBox;
             if (!bb || score < scoreThreshold) continue;
-            detections.push({
+            const clamped = clampBox({
               x: Math.round(tx + bb.originX),
               y: Math.round(ty + bb.originY),
               width: Math.round(bb.width),
               height: Math.round(bb.height),
-            });
+            }, imgW, imgH);
+            if (clamped.width <= 0 || clamped.height <= 0) continue;
+            detections.push(clamped);
           }
         }
       }
