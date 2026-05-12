@@ -11,16 +11,8 @@
 
 import initWasm, { alloc, dealloc, process as wasmProcess }
   from './pkg/milkcoffee_wasm.js';
-import {
-  detectFaces,
-  loadFaceDetectors,
-  DETECTION_SCALES,
-  DETECTION_SCORE_THRESHOLD,
-  DETECTION_PADDING,
-  DETECTION_TILE_SIZE,
-  DETECTION_TILE_OVERLAP,
-  DETECTION_TILE_THRESHOLD,
-} from './face_detection.js';
+import { detectFaces, loadFaceDetectors } from './face_detection.js';
+import { DETECTION_PRESETS, validateScales, validateNumber } from './detection_settings.js';
 
 // ─── DOM refs ────────────────────────────────────────────────────────────────
 const fileInput    = document.getElementById('file-input');
@@ -53,52 +45,6 @@ const DETECTION_INPUT_IDS = [
 ];
 
 // ─── Detection presets ────────────────────────────────────────────────────────
-const DETECTION_PRESETS = {
-  default: {
-    scales: DETECTION_SCALES,
-    scoreThreshold: DETECTION_SCORE_THRESHOLD,
-    padding: DETECTION_PADDING,
-    tileSize: DETECTION_TILE_SIZE,
-    tileOverlap: DETECTION_TILE_OVERLAP,
-    tileThreshold: DETECTION_TILE_THRESHOLD,
-  },
-  'big-image': {
-    // Large crowd / high-resolution photos – enable tiling early, moderate scales.
-    scales: [1, 1.5, 2, 2.5],
-    scoreThreshold: 0.2,
-    padding: 0.18,
-    tileSize: 512,
-    tileOverlap: 0.4,
-    tileThreshold: 500,
-  },
-  'small-image': {
-    // Portrait / selfie – a few prominent faces, no tiling needed.
-    scales: [1, 1.5, 2, 2.5, 3],
-    scoreThreshold: 0.3,
-    padding: 0.2,
-    tileSize: 0,
-    tileOverlap: 0.3,
-    tileThreshold: 99999,
-  },
-  'small-faces': {
-    // Tiny or distant faces – aggressive upscaling and lower threshold.
-    scales: [1, 1.5, 2, 2.5, 3, 3.5, 4],
-    scoreThreshold: 0.15,
-    padding: 0.15,
-    tileSize: 480,
-    tileOverlap: 0.4,
-    tileThreshold: 400,
-  },
-  'big-faces': {
-    // Close-up, prominent faces – high confidence threshold, no tiling.
-    scales: [1, 1.5, 2],
-    scoreThreshold: 0.4,
-    padding: 0.25,
-    tileSize: 0,
-    tileOverlap: 0.3,
-    tileThreshold: 99999,
-  },
-};
 
 function applyPreset(presetName) {
   const preset = DETECTION_PRESETS[presetName];
@@ -120,57 +66,31 @@ document.querySelectorAll('.preset-btn').forEach(btn => {
   btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
 });
 
-// ─── Detection settings validation ───────────────────────────────────────────
+// ─── Detection settings validation (DOM wrappers around pure validators) ─────
 function validateScalesField() {
-  const parts = detScalesInput.value.split(',').map(s => s.trim()).filter(Boolean);
+  const result = validateScales(detScalesInput.value);
   const errEl = document.getElementById('det-scales-err');
-  if (parts.length === 0) {
-    errEl.textContent = 'Enter at least one scale value.';
-    detScalesInput.classList.add('input-error');
-    return null;
-  }
-  const nums = parts.map(Number);
-  if (nums.some(isNaN)) {
-    errEl.textContent = 'All values must be numbers.';
-    detScalesInput.classList.add('input-error');
-    return null;
-  }
-  if (nums.some(n => n <= 0)) {
-    errEl.textContent = 'All scale values must be positive.';
+  if (!result.ok) {
+    errEl.textContent = result.error;
     detScalesInput.classList.add('input-error');
     return null;
   }
   errEl.textContent = '';
   detScalesInput.classList.remove('input-error');
-  return nums;
+  return result.values;
 }
 
-function validateNumberField(inputEl, errId, { min, max, label, integer = false }) {
+function validateNumberField(inputEl, errId, opts) {
+  const result = validateNumber(inputEl.value, opts);
   const errEl = document.getElementById(errId);
-  const n = parseFloat(inputEl.value);
-  if (isNaN(n)) {
-    errEl.textContent = `${label} must be a number.`;
-    inputEl.classList.add('input-error');
-    return null;
-  }
-  if (integer && !Number.isInteger(n)) {
-    errEl.textContent = `${label} must be a whole number.`;
-    inputEl.classList.add('input-error');
-    return null;
-  }
-  if (min !== undefined && n < min) {
-    errEl.textContent = `${label} must be ≥ ${min}.`;
-    inputEl.classList.add('input-error');
-    return null;
-  }
-  if (max !== undefined && n > max) {
-    errEl.textContent = `${label} must be ≤ ${max}.`;
+  if (!result.ok) {
+    errEl.textContent = result.error;
     inputEl.classList.add('input-error');
     return null;
   }
   errEl.textContent = '';
   inputEl.classList.remove('input-error');
-  return n;
+  return result.value;
 }
 
 function readDetectionSettings() {

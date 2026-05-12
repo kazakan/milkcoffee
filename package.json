@@ -6,6 +6,7 @@
   "scripts": {
     "test:unit": "node --test tests/unit/**/*.test.mjs",
     "test:integration": "playwright test",
+    "test:rust": "cargo test --manifest-path wasm/Cargo.toml",
     "test": "npm run test:unit && npm run test:integration"
   },
   "repository": {
