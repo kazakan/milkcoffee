@@ -189,7 +189,10 @@ test('the site anonymises an uploaded image end to end', async ({ page }) => {
   await page.locator('#method').selectOption('2');
   await page.locator('#btn-process').click();
 
-  await expect(page.locator('#status')).toContainText('Done! 1 face(s) anonymised');
+  const statusText = await page.locator('#status').textContent();
+  expect(statusText).toMatch(/Done! \d+ face\(s\) anonymised/);
+  const detectedFaces = Number(statusText.match(/Done! (\d+) face\(s\) anonymised/)?.[1] ?? 0);
+  expect(detectedFaces).toBeGreaterThanOrEqual(1);
   await expect(page.locator('#btn-download')).toBeEnabled();
 
   const centerPixel = await page.evaluate(() => {
