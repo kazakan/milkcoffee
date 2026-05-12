@@ -8,6 +8,7 @@ import {
   DETECTION_SCALES,
   DETECTION_TILE_SIZE,
   DETECTION_TILE_THRESHOLD,
+  DETECTION_MAX_CANVAS_DIM,
   createFaceDetectorOptions,
   detectFaces,
   loadFaceDetectors,
@@ -122,6 +123,7 @@ test('detection constants have expected sensitivity and range', () => {
   assert.ok(Math.max(...DETECTION_SCALES) >= 2.5, 'max scale should be at least 2.5 for small faces');
   assert.ok(DETECTION_TILE_SIZE >= 512, 'tile size should be at least 512 for crowd detection');
   assert.ok(DETECTION_TILE_THRESHOLD <= 1000, 'tiling should activate for moderately large images');
+  assert.ok(DETECTION_MAX_CANVAS_DIM >= 1024, 'canvas cap should allow meaningful upscaling');
 });
 
 test('detectFaces runs tile-based detection for large images', async () => {

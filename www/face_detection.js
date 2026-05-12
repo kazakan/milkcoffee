@@ -59,7 +59,7 @@ export async function loadFaceDetectors(FaceDetector, vision, runningMode = 'IMA
 // Maximum canvas dimension for scale-based detection passes.  Keeping this
 // at 2048 prevents allocating enormous canvases for high-resolution source
 // images while still providing useful upscaling for smaller images.
-const DETECTION_MAX_CANVAS_DIM = 2048;
+export const DETECTION_MAX_CANVAS_DIM = 2048;
 
 export function createDetectionCanvas(bitmap, width, height, scale = 1) {
   const scaledW = Math.max(1, Math.round(width * scale));
@@ -160,6 +160,7 @@ export async function detectFaces({
   createCanvas = createDetectionCanvas,
   createTileCanvas = createDetectionTileCanvas,
   tileSize = DETECTION_TILE_SIZE,
+  tileOverlap = DETECTION_TILE_OVERLAP,
   tileThreshold = DETECTION_TILE_THRESHOLD,
 }) {
   if (!faceDetectors || faceDetectors.length === 0) return [];
@@ -195,7 +196,7 @@ export async function detectFaces({
   // Divides the image into overlapping tiles so that faces which are tiny
   // relative to the full image appear at a useful resolution for the model.
   if (tileSize > 0 && (imgW > tileThreshold || imgH > tileThreshold)) {
-    const step = Math.max(1, Math.round(tileSize * (1 - DETECTION_TILE_OVERLAP)));
+    const step = Math.max(1, Math.round(tileSize * (1 - tileOverlap)));
     for (let ty = 0; ty < imgH; ty += step) {
       for (let tx = 0; tx < imgW; tx += step) {
         const tw = Math.min(tileSize, imgW - tx);
