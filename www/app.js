@@ -46,6 +46,12 @@ const detTileSizeInput   = document.getElementById('det-tile-size');
 const detTileOverlapInput = document.getElementById('det-tile-overlap');
 const detTileThreshInput = document.getElementById('det-tile-threshold');
 
+// IDs of all detection setting inputs – used for bulk error clearing.
+const DETECTION_INPUT_IDS = [
+  'det-scales', 'det-score-threshold', 'det-padding',
+  'det-tile-size', 'det-tile-overlap', 'det-tile-threshold',
+];
+
 // ─── Detection presets ────────────────────────────────────────────────────────
 const DETECTION_PRESETS = {
   default: {
@@ -104,8 +110,7 @@ function applyPreset(presetName) {
   detTileOverlapInput.value  = preset.tileOverlap;
   detTileThreshInput.value   = preset.tileThreshold;
   // Clear any previous validation errors.
-  for (const id of ['det-scales', 'det-score-threshold', 'det-padding',
-                    'det-tile-size', 'det-tile-overlap', 'det-tile-threshold']) {
+  for (const id of DETECTION_INPUT_IDS) {
     document.getElementById(id).classList.remove('input-error');
     document.getElementById(id + '-err').textContent = '';
   }
@@ -340,7 +345,7 @@ async function processImage() {
     // ── Step 2: Face detection (JS side) ─────────────────────────────────────
     const detSettings = readDetectionSettings();
     if (!detSettings) {
-      setStatus('Fix detection settings before processing.', 'error');
+      setStatus('Invalid detection settings. Please correct the highlighted fields.', 'error');
       btnProcess.disabled = false;
       hideOverlay();
       return;
