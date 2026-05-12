@@ -4,6 +4,11 @@ import assert from 'node:assert/strict';
 import {
   DETECTION_MODEL_ASSET_PATH,
   DETECTION_MODEL_ASSET_PATHS,
+  DETECTION_SCORE_THRESHOLD,
+  DETECTION_SCALES,
+  DETECTION_TILE_SIZE,
+  DETECTION_TILE_THRESHOLD,
+  DETECTION_MAX_CANVAS_DIM,
   createFaceDetectorOptions,
   detectFaces,
   loadFaceDetectors,
@@ -110,4 +115,83 @@ test('detectFaces normalizes scaled detections and filters low-confidence hits',
     { width: 150, height: 120 },
   ]);
   assert.deepEqual(boxes, [{ x: 0, y: 11, width: 52, height: 38 }]);
+});
+
+test('detection constants have expected sensitivity and range', () => {
+  assert.ok(DETECTION_SCORE_THRESHOLD <= 0.3, 'threshold should be low enough to catch faded faces');
+  assert.ok(DETECTION_SCALES.length >= 4, 'should have at least 4 scale steps');
+  assert.ok(Math.max(...DETECTION_SCALES) >= 2.5, 'max scale should be at least 2.5 for small faces');
+  assert.ok(DETECTION_TILE_SIZE >= 512, 'tile size should be at least 512 for crowd detection');
+  assert.ok(DETECTION_TILE_THRESHOLD <= 1000, 'tiling should activate for moderately large images');
+  assert.ok(DETECTION_MAX_CANVAS_DIM >= 1024, 'canvas cap should allow meaningful upscaling');
+});
+
+test('detectFaces runs tile-based detection for large images', async () => {
+  const tileCalls = [];
+  const fakeDetector = {
+    async detect(input) {
+      return {
+        detections: [
+          {
+            categories: [{ score: 0.9 }],
+            boundingBox: { originX: 10, originY: 10, width: 20, height: 20 },
+          },
+        ],
+      };
+    },
+  };
+
+  const boxes = await detectFaces({
+    bitmap: {},
+    imgW: 1000,
+    imgH: 900,
+    faceDetectors: [fakeDetector],
+    scales: [1],
+    createCanvas(_bitmap, width, height, _scale) {
+      return { width, height };
+    },
+    createTileCanvas(_bitmap, tx, ty, tw, th) {
+      tileCalls.push({ tx, ty, tw, th });
+      return { width: tw, height: th };
+    },
+    tileSize: 640,
+    tileThreshold: 800,
+  });
+
+  // Tiling should have been triggered because 1000 > 800.
+  assert.ok(tileCalls.length > 0, 'tile detection should run for large images');
+  // All returned boxes must be within image bounds.
+  for (const box of boxes) {
+    assert.ok(box.x >= 0 && box.y >= 0, 'box origin must be non-negative');
+    assert.ok(box.x + box.width <= 1000, 'box must not exceed image width');
+    assert.ok(box.y + box.height <= 900, 'box must not exceed image height');
+  }
+});
+
+test('detectFaces skips tile-based detection for small images', async () => {
+  const tileCalls = [];
+  const fakeDetector = {
+    async detect() {
+      return { detections: [] };
+    },
+  };
+
+  await detectFaces({
+    bitmap: {},
+    imgW: 400,
+    imgH: 300,
+    faceDetectors: [fakeDetector],
+    scales: [1],
+    createCanvas(_bitmap, width, height) {
+      return { width, height };
+    },
+    createTileCanvas(_bitmap, tx, ty, tw, th) {
+      tileCalls.push({ tx, ty, tw, th });
+      return { width: tw, height: th };
+    },
+    tileSize: 640,
+    tileThreshold: 800,
+  });
+
+  assert.equal(tileCalls.length, 0, 'tile detection should not run for small images');
 });
