@@ -118,7 +118,7 @@ test('detectFaces normalizes scaled detections and filters low-confidence hits',
 });
 
 test('detection constants have expected sensitivity and range', () => {
-  assert.ok(DETECTION_SCORE_THRESHOLD <= 0.25, 'threshold should be low enough to catch distant tiny faces');
+  assert.ok(DETECTION_SCORE_THRESHOLD <= 0.2, 'threshold should be low enough to catch distant tiny faces');
   assert.ok(DETECTION_SCALES.length >= 6, 'should have several scale steps for tiny-face recovery');
   assert.ok(Math.max(...DETECTION_SCALES) >= 4, 'max scale should be at least 4x for very small faces');
   assert.ok(DETECTION_TILE_SIZE <= 640, 'tile size should stay compact enough to enlarge tiny faces');
