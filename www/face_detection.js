@@ -11,9 +11,16 @@ export const DETECTION_MODEL_ASSET_PATHS = [
   'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector/float16/1/face_detector.task',
 ];
 export const DETECTION_MODEL_ASSET_PATH = DETECTION_MODEL_ASSET_PATHS[0];
-export const DETECTION_SCALES = [1, 1.5, 2];
-export const DETECTION_SCORE_THRESHOLD = 0.35;
+// Extra scales (2.5, 3) help detect small faces in small-to-medium images.
+export const DETECTION_SCALES = [1, 1.5, 2, 2.5, 3];
+// Lower threshold catches faded, partially occluded, or distant faces.
+export const DETECTION_SCORE_THRESHOLD = 0.25;
 export const DETECTION_PADDING = 0.18;
+// Tile-based detection constants – used for large images (crowds, high-res photos).
+export const DETECTION_TILE_SIZE = 640;
+export const DETECTION_TILE_OVERLAP = 0.2;
+// Images with any dimension above this threshold also receive a tiled detection pass.
+export const DETECTION_TILE_THRESHOLD = 800;
 
 export function createFaceDetectorOptions(
   runningMode = 'IMAGE',
@@ -49,14 +56,32 @@ export async function loadFaceDetectors(FaceDetector, vision, runningMode = 'IMA
   );
 }
 
+// Maximum canvas dimension for scale-based detection passes.  Keeping this
+// at 2048 prevents allocating enormous canvases for high-resolution source
+// images while still providing useful upscaling for smaller images.
+const DETECTION_MAX_CANVAS_DIM = 2048;
+
 export function createDetectionCanvas(bitmap, width, height, scale = 1) {
   const scaledW = Math.max(1, Math.round(width * scale));
   const scaledH = Math.max(1, Math.round(height * scale));
+  const factor = Math.min(1, DETECTION_MAX_CANVAS_DIM / Math.max(scaledW, scaledH));
+  const finalW = Math.max(1, Math.round(scaledW * factor));
+  const finalH = Math.max(1, Math.round(scaledH * factor));
   const detectionCanvas = document.createElement('canvas');
-  detectionCanvas.width = scaledW;
-  detectionCanvas.height = scaledH;
-  detectionCanvas.getContext('2d').drawImage(bitmap, 0, 0, scaledW, scaledH);
+  detectionCanvas.width = finalW;
+  detectionCanvas.height = finalH;
+  detectionCanvas.getContext('2d').drawImage(bitmap, 0, 0, finalW, finalH);
   return detectionCanvas;
+}
+
+// Creates a canvas for a single tile extracted from the source bitmap.
+// tx/ty are the tile origin in the original image coordinate space.
+export function createDetectionTileCanvas(bitmap, tx, ty, tw, th) {
+  const tileCanvas = document.createElement('canvas');
+  tileCanvas.width = tw;
+  tileCanvas.height = th;
+  tileCanvas.getContext('2d').drawImage(bitmap, tx, ty, tw, th, 0, 0, tw, th);
+  return tileCanvas;
 }
 
 export function expandBox(box, imgW, imgH, padding = DETECTION_PADDING) {
@@ -133,11 +158,15 @@ export async function detectFaces({
   scales = DETECTION_SCALES,
   scoreThreshold = DETECTION_SCORE_THRESHOLD,
   createCanvas = createDetectionCanvas,
+  createTileCanvas = createDetectionTileCanvas,
+  tileSize = DETECTION_TILE_SIZE,
+  tileThreshold = DETECTION_TILE_THRESHOLD,
 }) {
   if (!faceDetectors || faceDetectors.length === 0) return [];
 
   const detections = [];
 
+  // ── Scale-based full-image detection ─────────────────────────────────────
   for (const detector of faceDetectors) {
     for (const scale of scales) {
       const input = createCanvas(bitmap, imgW, imgH, scale);
@@ -146,12 +175,46 @@ export async function detectFaces({
         const score = det.categories?.[0]?.score ?? 1;
         const bb = det.boundingBox;
         if (!bb || score < scoreThreshold) continue;
+        // Coordinates are in the (possibly capped) canvas space; to recover
+        // original-image coordinates we divide by the effective scale, which
+        // is (canvas.width / imgW) rather than the nominal `scale` value when
+        // the canvas was capped.
+        const effectiveScaleX = input.width / imgW;
+        const effectiveScaleY = input.height / imgH;
         detections.push({
-          x: Math.round(bb.originX / scale),
-          y: Math.round(bb.originY / scale),
-          width: Math.round(bb.width / scale),
-          height: Math.round(bb.height / scale),
+          x: Math.round(bb.originX / effectiveScaleX),
+          y: Math.round(bb.originY / effectiveScaleY),
+          width: Math.round(bb.width / effectiveScaleX),
+          height: Math.round(bb.height / effectiveScaleY),
         });
+      }
+    }
+  }
+
+  // ── Tile-based detection for large images (crowds / small distant faces) ──
+  // Divides the image into overlapping tiles so that faces which are tiny
+  // relative to the full image appear at a useful resolution for the model.
+  if (tileSize > 0 && (imgW > tileThreshold || imgH > tileThreshold)) {
+    const step = Math.max(1, Math.round(tileSize * (1 - DETECTION_TILE_OVERLAP)));
+    for (let ty = 0; ty < imgH; ty += step) {
+      for (let tx = 0; tx < imgW; tx += step) {
+        const tw = Math.min(tileSize, imgW - tx);
+        const th = Math.min(tileSize, imgH - ty);
+        const input = createTileCanvas(bitmap, tx, ty, tw, th);
+        for (const detector of faceDetectors) {
+          const result = await detector.detect(input);
+          for (const det of result.detections || []) {
+            const score = det.categories?.[0]?.score ?? 1;
+            const bb = det.boundingBox;
+            if (!bb || score < scoreThreshold) continue;
+            detections.push({
+              x: Math.round(tx + bb.originX),
+              y: Math.round(ty + bb.originY),
+              width: Math.round(bb.width),
+              height: Math.round(bb.height),
+            });
+          }
+        }
       }
     }
   }
