@@ -128,7 +128,7 @@ export function intersectionOverUnion(a, b) {
   return union > 0 ? intersection / union : 0;
 }
 
-export function mergeBoxes(boxes, imgW, imgH) {
+export function mergeBoxes(boxes, imgW, imgH, padding = DETECTION_PADDING) {
   const merged = [];
 
   for (const box of boxes) {
@@ -157,7 +157,7 @@ export function mergeBoxes(boxes, imgW, imgH) {
       }
     }
 
-    merged.push(expandBox(current, imgW, imgH));
+    merged.push(expandBox(current, imgW, imgH, padding));
   }
 
   return merged;
@@ -170,6 +170,7 @@ export async function detectFaces({
   faceDetectors,
   scales = DETECTION_SCALES,
   scoreThreshold = DETECTION_SCORE_THRESHOLD,
+  padding = DETECTION_PADDING,
   createCanvas = createDetectionCanvas,
   createTileCanvas = createDetectionTileCanvas,
   tileSize = DETECTION_TILE_SIZE,
@@ -237,5 +238,5 @@ export async function detectFaces({
     }
   }
 
-  return mergeBoxes(detections, imgW, imgH).filter(box => box.width > 0 && box.height > 0);
+  return mergeBoxes(detections, imgW, imgH, padding).filter(box => box.width > 0 && box.height > 0);
 }

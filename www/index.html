@@ -199,6 +199,66 @@
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
+    /* ---- Detection settings panel ---- */
+    details.det-settings > summary {
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #a78bfa;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    details.det-settings > summary::-webkit-details-marker { display: none; }
+    details.det-settings > summary::before {
+      content: '▶';
+      font-size: 0.65rem;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+    details[open].det-settings > summary::before { transform: rotate(90deg); }
+    .det-settings-body {
+      margin-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .det-settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
+      gap: 0.75rem;
+    }
+    input[type=number].det-input, input[type=text].det-input {
+      background: #0f3460;
+      color: #e0e0e0;
+      border: 1px solid #1e4080;
+      border-radius: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.9rem;
+      width: 100%;
+    }
+    input[type=number].det-input:focus, input[type=text].det-input:focus {
+      outline: 2px solid #a78bfa;
+    }
+    .det-input.input-error { border-color: #f87171 !important; outline: none; }
+    .det-error { font-size: 0.75rem; color: #f87171; min-height: 1.1em; }
+    .preset-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .preset-btn {
+      flex: 0 0 auto;
+      padding: 0.38rem 0.75rem;
+      background: #0f3460;
+      color: #e0e0e0;
+      border: 1px solid #1e4080;
+      border-radius: 0.5rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .preset-btn:hover { opacity: 0.82; }
+
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -232,6 +292,62 @@
         <div class="strength-value" id="strength-val">0.60</div>
       </div>
     </div>
+  </div>
+
+  <!-- Detection Settings (collapsible, collapsed by default) -->
+  <div class="card">
+    <details class="det-settings">
+      <summary>Detection Settings</summary>
+      <div class="det-settings-body">
+
+        <!-- Presets -->
+        <div>
+          <label style="display:block;margin-bottom:0.5rem;">Presets</label>
+          <div class="preset-buttons">
+            <button type="button" class="preset-btn" data-preset="default">🔄 Default</button>
+            <button type="button" class="preset-btn" data-preset="big-image">🖼 Big image</button>
+            <button type="button" class="preset-btn" data-preset="small-image">📷 Small image</button>
+            <button type="button" class="preset-btn" data-preset="small-faces">🔬 Small faces</button>
+            <button type="button" class="preset-btn" data-preset="big-faces">🙂 Big faces</button>
+          </div>
+        </div>
+
+        <!-- Parameter inputs -->
+        <div class="det-settings-grid">
+          <div class="control-group">
+            <label for="det-scales">Scales (comma-separated)</label>
+            <input type="text" id="det-scales" class="det-input" value="1, 1.5, 2, 2.5, 3, 3.5, 4" />
+            <div class="det-error" id="det-scales-err"></div>
+          </div>
+          <div class="control-group">
+            <label for="det-score-threshold">Score threshold (0–1)</label>
+            <input type="number" id="det-score-threshold" class="det-input" min="0" max="1" step="0.01" value="0.2" />
+            <div class="det-error" id="det-score-threshold-err"></div>
+          </div>
+          <div class="control-group">
+            <label for="det-padding">Padding (0–1)</label>
+            <input type="number" id="det-padding" class="det-input" min="0" max="1" step="0.01" value="0.18" />
+            <div class="det-error" id="det-padding-err"></div>
+          </div>
+          <div class="control-group">
+            <label for="det-tile-size">Tile size (pixels, 0 to disable)</label>
+            <input type="number" id="det-tile-size" class="det-input" min="0" step="1" value="512" />
+            <div class="det-error" id="det-tile-size-err"></div>
+          </div>
+          <div class="control-group">
+            <label for="det-tile-overlap">Tile overlap (0–0.9)</label>
+            <input type="number" id="det-tile-overlap" class="det-input" min="0" max="0.9" step="0.05" value="0.3" />
+            <div class="det-error" id="det-tile-overlap-err"></div>
+          </div>
+          <div class="control-group">
+            <label for="det-tile-threshold">Tile threshold (px)</label>
+            <input type="number" id="det-tile-threshold" class="det-input" min="0" step="1" value="640" />
+            <div class="det-error" id="det-tile-threshold-err"></div>
+          </div>
+        </div>
+
+      </div>
+    </details>
   </div>
 
   <!-- Actions -->

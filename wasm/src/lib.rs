@@ -367,3 +367,256 @@ fn parse_boxes(json: &str) -> Vec<(u32, u32, u32, u32)> {
     }
     result
 }
+
+// ─── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_boxes ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_boxes_empty_array() {
+        assert!(parse_boxes("[]").is_empty());
+    }
+
+    #[test]
+    fn parse_boxes_not_array() {
+        assert!(parse_boxes("{}").is_empty());
+        assert!(parse_boxes("").is_empty());
+    }
+
+    #[test]
+    fn parse_boxes_single_box() {
+        let boxes = parse_boxes(r#"[{"x":10,"y":20,"width":30,"height":40}]"#);
+        assert_eq!(boxes, vec![(10, 20, 30, 40)]);
+    }
+
+    #[test]
+    fn parse_boxes_multiple_boxes() {
+        let boxes = parse_boxes(r#"[{"x":0,"y":0,"width":10,"height":10},{"x":50,"y":60,"width":20,"height":25}]"#);
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[0], (0, 0, 10, 10));
+        assert_eq!(boxes[1], (50, 60, 20, 25));
+    }
+
+    #[test]
+    fn parse_boxes_skips_zero_dimension_boxes() {
+        // width=0: should be skipped.
+        let boxes = parse_boxes(r#"[{"x":0,"y":0,"width":0,"height":10}]"#);
+        assert!(boxes.is_empty());
+        // height=0: should be skipped.
+        let boxes = parse_boxes(r#"[{"x":0,"y":0,"width":10,"height":0}]"#);
+        assert!(boxes.is_empty());
+    }
+
+    #[test]
+    fn parse_boxes_default_x_y_are_zero() {
+        // x and y are optional and default to 0.
+        let boxes = parse_boxes(r#"[{"width":5,"height":5}]"#);
+        assert_eq!(boxes, vec![(0, 0, 5, 5)]);
+    }
+
+    // ── region_bounds ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn region_bounds_normal_region() {
+        let b = region_bounds(100, 100, 10, 20, 30, 40);
+        assert_eq!(b, Some((10, 20, 40, 60)));
+    }
+
+    #[test]
+    fn region_bounds_clamps_to_image() {
+        // Region extends beyond the image boundary.
+        let b = region_bounds(50, 50, 40, 40, 20, 20);
+        assert_eq!(b, Some((40, 40, 50, 50)));
+    }
+
+    #[test]
+    fn region_bounds_returns_none_for_empty_region() {
+        // rx >= img_w after clamping → empty.
+        assert_eq!(region_bounds(10, 10, 10, 0, 5, 5), None);
+        assert_eq!(region_bounds(10, 10, 0, 10, 5, 5), None);
+    }
+
+    // ── blend_channel ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn blend_channel_alpha_zero_returns_base() {
+        assert_eq!(blend_channel(100, 200, 0.0), 100);
+    }
+
+    #[test]
+    fn blend_channel_alpha_one_returns_overlay() {
+        assert_eq!(blend_channel(100, 200, 1.0), 200);
+    }
+
+    #[test]
+    fn blend_channel_alpha_half_blends() {
+        let result = blend_channel(0, 100, 0.5);
+        assert_eq!(result, 50);
+    }
+
+    #[test]
+    fn blend_channel_clamps_alpha_above_one() {
+        // Should behave as if alpha = 1.0.
+        assert_eq!(blend_channel(100, 200, 2.0), 200);
+    }
+
+    #[test]
+    fn blend_channel_clamps_alpha_below_zero() {
+        // Should behave as if alpha = 0.0.
+        assert_eq!(blend_channel(100, 200, -1.0), 100);
+    }
+
+    // ── apply_solid ───────────────────────────────────────────────────────────
+
+    fn make_pixels(w: u32, h: u32, fill: u8) -> Vec<u8> {
+        vec![fill; (w * h * 4) as usize]
+    }
+
+    #[test]
+    fn apply_solid_fills_region_with_black() {
+        let w = 10u32;
+        let h = 10u32;
+        let mut pixels = make_pixels(w, h, 255);
+        apply_solid(&mut pixels, w, h, 2, 3, 4, 4);
+
+        for py in 3..7 {
+            for px in 2..6 {
+                let idx = (py * w + px) as usize * 4;
+                assert_eq!(pixels[idx],     0, "R should be 0 at ({px},{py})");
+                assert_eq!(pixels[idx + 1], 0, "G should be 0 at ({px},{py})");
+                assert_eq!(pixels[idx + 2], 0, "B should be 0 at ({px},{py})");
+                assert_eq!(pixels[idx + 3], 255, "A should be 255 at ({px},{py})");
+            }
+        }
+    }
+
+    #[test]
+    fn apply_solid_does_not_touch_pixels_outside_region() {
+        let w = 10u32;
+        let h = 10u32;
+        let mut pixels = make_pixels(w, h, 200);
+        apply_solid(&mut pixels, w, h, 3, 3, 2, 2);
+
+        // Top-left corner (0,0) should be untouched.
+        assert_eq!(pixels[0], 200);
+        assert_eq!(pixels[1], 200);
+        assert_eq!(pixels[2], 200);
+        assert_eq!(pixels[3], 200);
+    }
+
+    #[test]
+    fn apply_solid_zero_dimension_region_is_no_op() {
+        let w = 10u32;
+        let h = 10u32;
+        let original = make_pixels(w, h, 128);
+        let mut pixels = original.clone();
+        // width = 0 → region_bounds returns None → no writes.
+        apply_solid(&mut pixels, w, h, 0, 0, 0, 5);
+        assert_eq!(pixels, original);
+    }
+
+    // ── apply_mosaic ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_mosaic_uniform_region_unchanged() {
+        // A uniform colour region should look identical after mosaic.
+        let w = 8u32;
+        let h = 8u32;
+        let mut pixels = make_pixels(w, h, 120);
+        let original = pixels.clone();
+        apply_mosaic(&mut pixels, w, h, 0, 0, w, h, 2);
+        assert_eq!(pixels, original, "uniform image should be unchanged by mosaic");
+    }
+
+    #[test]
+    fn apply_mosaic_averages_block_pixels() {
+        // 2×2 image, block size 2 – the entire image is one block.
+        // Pixels: (0,100,0,255) and (0,200,0,255) on row 0; same on row 1.
+        let w = 2u32;
+        let h = 2u32;
+        let mut pixels = vec![
+            0, 100, 0, 255, // (0,0)
+            0, 200, 0, 255, // (1,0)
+            0, 100, 0, 255, // (0,1)
+            0, 200, 0, 255, // (1,1)
+        ];
+        apply_mosaic(&mut pixels, w, h, 0, 0, w, h, 2);
+        // Average green = (100+200+100+200)/4 = 150.
+        for i in 0..4 {
+            let idx = i * 4;
+            assert_eq!(pixels[idx],     0,   "R should be 0");
+            assert_eq!(pixels[idx + 1], 150, "G should be 150 (average)");
+            assert_eq!(pixels[idx + 2], 0,   "B should be 0");
+            assert_eq!(pixels[idx + 3], 255, "A should be 255");
+        }
+    }
+
+    // ── apply_blur ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_blur_uniform_region_unchanged() {
+        let w = 8u32;
+        let h = 8u32;
+        let mut pixels = make_pixels(w, h, 80);
+        let original = pixels.clone();
+        apply_blur(&mut pixels, w, h, 0, 0, w, h, 2);
+        assert_eq!(pixels, original, "uniform image should be unchanged by blur");
+    }
+
+    #[test]
+    fn apply_blur_does_not_touch_pixels_outside_region() {
+        let w = 10u32;
+        let h = 10u32;
+        // Fill image with 100, put a bright spot inside the blur region.
+        let mut pixels = make_pixels(w, h, 100);
+        // Set centre pixel to 255 in all channels.
+        let cx = (5 * w + 5) as usize * 4;
+        pixels[cx] = 255;
+        pixels[cx + 1] = 255;
+        pixels[cx + 2] = 255;
+
+        // Blur only the centre 4×4 area.
+        apply_blur(&mut pixels, w, h, 4, 4, 4, 4, 1);
+
+        // Pixel at (0,0) must be untouched.
+        assert_eq!(pixels[0], 100);
+        assert_eq!(pixels[1], 100);
+        assert_eq!(pixels[2], 100);
+    }
+
+    // ── Method dispatch (process-level) ──────────────────────────────────────
+
+    #[test]
+    fn process_solid_method_blackens_face_region() {
+        let w = 20u32;
+        let h = 20u32;
+        let size = (w * h * 4) as usize;
+        // Fill with white.
+        let mut pixels = vec![255u8; size];
+
+        // Apply the solid method directly (method 2).
+        let boxes = parse_boxes(r#"[{"x":5,"y":5,"width":10,"height":10}]"#);
+        for (bx, by, bw, bh) in boxes {
+            apply_solid(&mut pixels, w, h, bx, by, bw, bh);
+        }
+
+        // Pixels inside the region (5,5)..(15,15) must be black.
+        for py in 5..15 {
+            for px in 5..15 {
+                let idx = (py * w + px) as usize * 4;
+                assert_eq!(pixels[idx],     0, "R@({px},{py})");
+                assert_eq!(pixels[idx + 1], 0, "G@({px},{py})");
+                assert_eq!(pixels[idx + 2], 0, "B@({px},{py})");
+            }
+        }
+
+        // Pixels outside the region must remain white.
+        assert_eq!(pixels[0], 255); // (0,0)
+        assert_eq!(pixels[1], 255);
+        assert_eq!(pixels[2], 255);
+    }
+}

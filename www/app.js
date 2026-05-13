@@ -12,6 +12,7 @@
 import initWasm, { alloc, dealloc, process as wasmProcess }
   from './pkg/milkcoffee_wasm.js';
 import { detectFaces, loadFaceDetectors } from './face_detection.js';
+import { DETECTION_PRESETS, validateScales, validateNumber } from './detection_settings.js';
 
 // ─── DOM refs ────────────────────────────────────────────────────────────────
 const fileInput    = document.getElementById('file-input');
@@ -28,6 +29,101 @@ const loadingText  = document.getElementById('loading-text');
 
 const ctx = canvas.getContext('2d');
 const METHOD_NAMES = ['mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks'];
+
+// ─── Detection settings DOM refs ─────────────────────────────────────────────
+const detScalesInput     = document.getElementById('det-scales');
+const detScoreThreshInput = document.getElementById('det-score-threshold');
+const detPaddingInput    = document.getElementById('det-padding');
+const detTileSizeInput   = document.getElementById('det-tile-size');
+const detTileOverlapInput = document.getElementById('det-tile-overlap');
+const detTileThreshInput = document.getElementById('det-tile-threshold');
+
+// IDs of all detection setting inputs – used for bulk error clearing.
+const DETECTION_INPUT_IDS = [
+  'det-scales', 'det-score-threshold', 'det-padding',
+  'det-tile-size', 'det-tile-overlap', 'det-tile-threshold',
+];
+
+// ─── Detection presets ────────────────────────────────────────────────────────
+
+function applyPreset(presetName) {
+  const preset = DETECTION_PRESETS[presetName];
+  if (!preset) return;
+  detScalesInput.value       = preset.scales.join(', ');
+  detScoreThreshInput.value  = preset.scoreThreshold;
+  detPaddingInput.value      = preset.padding;
+  detTileSizeInput.value     = preset.tileSize;
+  detTileOverlapInput.value  = preset.tileOverlap;
+  detTileThreshInput.value   = preset.tileThreshold;
+  // Clear any previous validation errors.
+  for (const id of DETECTION_INPUT_IDS) {
+    document.getElementById(id).classList.remove('input-error');
+    document.getElementById(id + '-err').textContent = '';
+  }
+}
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
+});
+
+// ─── Detection settings validation (DOM wrappers around pure validators) ─────
+function validateScalesField() {
+  const result = validateScales(detScalesInput.value);
+  const errEl = document.getElementById('det-scales-err');
+  if (!result.ok) {
+    errEl.textContent = result.error;
+    detScalesInput.classList.add('input-error');
+    return null;
+  }
+  errEl.textContent = '';
+  detScalesInput.classList.remove('input-error');
+  return result.values;
+}
+
+function validateNumberField(inputEl, errId, opts) {
+  const result = validateNumber(inputEl.value, opts);
+  const errEl = document.getElementById(errId);
+  if (!result.ok) {
+    errEl.textContent = result.error;
+    inputEl.classList.add('input-error');
+    return null;
+  }
+  errEl.textContent = '';
+  inputEl.classList.remove('input-error');
+  return result.value;
+}
+
+function readDetectionSettings() {
+  const scales        = validateScalesField();
+  const scoreThreshold = validateNumberField(detScoreThreshInput, 'det-score-threshold-err',
+    { min: 0, max: 1, label: 'Score threshold' });
+  const padding       = validateNumberField(detPaddingInput, 'det-padding-err',
+    { min: 0, max: 1, label: 'Padding' });
+  const tileSize      = validateNumberField(detTileSizeInput, 'det-tile-size-err',
+    { min: 0, label: 'Tile size', integer: true });
+  const tileOverlap   = validateNumberField(detTileOverlapInput, 'det-tile-overlap-err',
+    { min: 0, max: 0.9, label: 'Tile overlap' });
+  const tileThreshold = validateNumberField(detTileThreshInput, 'det-tile-threshold-err',
+    { min: 0, label: 'Tile threshold', integer: true });
+
+  if (scales === null || scoreThreshold === null || padding === null ||
+      tileSize === null || tileOverlap === null || tileThreshold === null) {
+    return null;
+  }
+  return { scales, scoreThreshold, padding, tileSize, tileOverlap, tileThreshold };
+}
+
+// Validate on change so users get immediate feedback.
+detScalesInput.addEventListener('change', validateScalesField);
+[
+  [detScoreThreshInput, 'det-score-threshold-err', { min: 0, max: 1, label: 'Score threshold' }],
+  [detPaddingInput,     'det-padding-err',          { min: 0, max: 1, label: 'Padding' }],
+  [detTileSizeInput,    'det-tile-size-err',         { min: 0, label: 'Tile size', integer: true }],
+  [detTileOverlapInput, 'det-tile-overlap-err',      { min: 0, max: 0.9, label: 'Tile overlap' }],
+  [detTileThreshInput,  'det-tile-threshold-err',    { min: 0, label: 'Tile threshold', integer: true }],
+].forEach(([el, errId, opts]) => {
+  el.addEventListener('change', () => validateNumberField(el, errId, opts));
+});
 
 // ─── App state ───────────────────────────────────────────────────────────────
 let wasmMemory   = null;   // WebAssembly.Memory (exported from WASM module)
@@ -167,7 +263,25 @@ async function processImage() {
     const imageData = offCtx.getImageData(0, 0, w, h);
 
     // ── Step 2: Face detection (JS side) ─────────────────────────────────────
-    const boxes = await detectFaces({ bitmap, imgW: w, imgH: h, faceDetectors });
+    const detSettings = readDetectionSettings();
+    if (!detSettings) {
+      setStatus('Invalid detection settings. Please correct the highlighted fields.', 'error');
+      btnProcess.disabled = false;
+      hideOverlay();
+      return;
+    }
+    const boxes = await detectFaces({
+      bitmap,
+      imgW: w,
+      imgH: h,
+      faceDetectors,
+      scales: detSettings.scales,
+      scoreThreshold: detSettings.scoreThreshold,
+      padding: detSettings.padding,
+      tileSize: detSettings.tileSize,
+      tileOverlap: detSettings.tileOverlap,
+      tileThreshold: detSettings.tileThreshold,
+    });
     const boxCount = boxes.length;
 
     loadingText.textContent = `Found ${boxCount} face(s). Anonymising…`;
