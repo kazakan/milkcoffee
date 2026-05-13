@@ -14,8 +14,10 @@ Upload a JPG or PNG → faces are detected → anonymisation is applied entirely
 | Feature | Detail |
 |---|---|
 | Face detection | [MediaPipe Face Detector](https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector) (BlazeFace, runs in JS) |
-| Anonymisation | Mosaic (pixelation) · Box blur · Solid mask |
+| Anonymisation | Mosaic (pixelation) · Box blur · Solid mask · Cyber veil · Neon blocks |
 | Strength control | 0.0 – 1.0 slider |
+| Detection settings | Collapsible panel to tune all detection parameters (scales, score threshold, padding, tiling) |
+| Detection presets | One-click presets for common scenarios (default, big image, small image, small faces, big faces) |
 | Auto-resize | Images wider than 1280 px are resized before processing |
 | Download | One-click PNG export |
 
@@ -45,17 +47,25 @@ Browser
 
 ```
 milkcoffee/
-├── wasm/               # Rust crate (compiled to WASM)
+├── wasm/                   # Rust crate (compiled to WASM)
 │   ├── Cargo.toml
-│   └── src/lib.rs      # alloc · dealloc · process (mosaic/blur/solid)
-├── www/                # Static web frontend
+│   └── src/lib.rs          # alloc · dealloc · process (mosaic/blur/solid/cyber/neon)
+├── www/                    # Static web frontend
 │   ├── index.html
-│   ├── app.js
-│   └── pkg/            # wasm-bindgen output (committed for convenience)
+│   ├── app.js              # Orchestration, UI, WASM bridge
+│   ├── face_detection.js   # MediaPipe face detection + tiling logic
+│   ├── detection_settings.js  # Pure validation helpers + detection presets
+│   └── pkg/                # wasm-bindgen output (committed for convenience)
 │       ├── milkcoffee_wasm.js
 │       ├── milkcoffee_wasm_bg.wasm
 │       └── *.d.ts
-└── build.sh            # Rebuild WASM from source
+├── tests/
+│   ├── unit/
+│   │   ├── face_detection.test.mjs       # Unit tests for detection logic
+│   │   └── detection_settings.test.mjs  # Unit tests for validation & presets
+│   └── integration/
+│       └── app.spec.mjs    # Playwright end-to-end tests
+└── build.sh                # Rebuild WASM from source
 ```
 
 ## Running locally
@@ -86,7 +96,13 @@ python3 -m http.server --directory www 8080
 ### Tests
 
 ```bash
+# JS unit tests + Playwright integration tests
 npm test
+
+# Rust unit tests only
+npm run test:rust
+# or equivalently:
+cargo test --manifest-path wasm/Cargo.toml
 ```
 
 ## Anonymisation methods
@@ -96,6 +112,33 @@ npm test
 | Mosaic | `apply_mosaic` | block size: 4 px → half the face dimension |
 | Blur | `apply_blur` | radius: 2 px → quarter the face dimension |
 | Solid | `apply_solid` | N/A — always fills with black |
+| Cyber veil | `apply_cyber` | grid density and scanline spacing |
+| Neon blocks | `apply_neon` | block size: 6 px → third of the face dimension |
+
+## Detection settings
+
+The collapsible **Detection Settings** panel (closed by default) exposes all face-detection parameters:
+
+| Field | Default | Description |
+|---|---|---|
+| Scales | `1, 1.5, 2, …` | Upscale factors to run the detector at |
+| Score threshold | `0.2` | Minimum confidence to accept a detection |
+| Padding | `0.15` | Extra margin added around each detected box |
+| Tile size | `480` | Tile dimension (px) for large-image tiling; `0` disables tiling |
+| Tile overlap | `0.3` | Fraction of overlap between adjacent tiles |
+| Tile threshold | `640` | Image dimension (px) above which tiling activates |
+
+Each field is validated inline on change and invalid values block processing with a descriptive error message.
+
+### Presets
+
+| Button | Intended for |
+|---|---|
+| 🔄 Default | Module-level defaults |
+| 🖼 Big image | Crowd / high-resolution photos |
+| 📷 Small image | Portraits and selfies |
+| 🔬 Small faces | Tiny or distant faces |
+| 🙂 Big faces | Close-up, prominent faces |
 
 ## Edge cases handled
 
