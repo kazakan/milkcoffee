@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  DEFAULT_DETECTION_MODEL_ID,
   DETECTION_MODEL_ASSET_PATH,
   DETECTION_MODEL_ASSET_PATHS,
+  DETECTION_MODEL_OPTIONS,
   DETECTION_SCORE_THRESHOLD,
   DETECTION_SCALES,
   DETECTION_TILE_SIZE,
@@ -14,6 +16,12 @@ import {
   loadFaceDetectors,
   mergeBoxes,
 } from '../../www/face_detection.js';
+
+test('detection model list includes mediapipe, yunet and scrfd500', () => {
+  const ids = DETECTION_MODEL_OPTIONS.map(model => model.id);
+  assert.deepEqual(ids, ['mediapipe', 'yunet', 'scrfd500']);
+  assert.equal(DEFAULT_DETECTION_MODEL_ID, 'mediapipe');
+});
 
 test('createFaceDetectorOptions uses the MediaPipe task model', () => {
   const options = createFaceDetectorOptions('IMAGE');

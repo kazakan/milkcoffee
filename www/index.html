@@ -291,6 +291,14 @@
         <input type="range" id="strength" min="0" max="100" value="60" />
         <div class="strength-value" id="strength-val">0.60</div>
       </div>
+      <div class="control-group">
+        <label for="det-model">Detection model</label>
+        <select id="det-model">
+          <option value="mediapipe">MediaPipe (BlazeFace)</option>
+          <option value="yunet">YuNet (OpenCV)</option>
+          <option value="scrfd500">SCRFD-500M (OpenCV, experimental)</option>
+        </select>
+      </div>
     </div>
   </div>
 
