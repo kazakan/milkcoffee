@@ -13,7 +13,7 @@ Upload a JPG or PNG → faces are detected → anonymisation is applied entirely
 
 | Feature | Detail |
 |---|---|
-| Face detection | [MediaPipe Face Detector](https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector) (BlazeFace, runs in JS) |
+| Face detection | Selectable detector: MediaPipe (BlazeFace), YuNet (OpenCV), SCRFD-500M (OpenCV, experimental) |
 | Anonymisation | Mosaic (pixelation) · Box blur · Solid mask · Cyber veil · Neon blocks |
 | Strength control | 0.0 – 1.0 slider |
 | Detection settings | Collapsible panel to tune all detection parameters (scales, score threshold, padding, tiling) |
@@ -129,6 +129,17 @@ The collapsible **Detection Settings** panel (closed by default) exposes all fac
 | Tile threshold | `640` | Image dimension (px) above which tiling activates |
 
 Each field is validated inline on change and invalid values block processing with a descriptive error message.
+
+### Detection model selection
+
+Use the **Detection model** dropdown to switch among:
+
+- `MediaPipe (BlazeFace)` (default)
+- `YuNet (OpenCV)`
+- `SCRFD-500M (OpenCV, experimental)`
+
+They run in-browser on local HTTP hosting (`python3 -m http.server --directory www 8080`) like the current app flow (SCRFD-500M is experimental and may fail depending on browser/runtime support).  
+For best reliability, you can place model files in `www/models/` so the app can load them locally first.
 
 ### Presets
 

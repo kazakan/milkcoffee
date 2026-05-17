@@ -11,7 +11,12 @@
 
 import initWasm, { alloc, dealloc, process as wasmProcess }
   from './pkg/milkcoffee_wasm.js';
-import { detectFaces, loadFaceDetectors } from './face_detection.js';
+import {
+  DEFAULT_DETECTION_MODEL_ID,
+  DETECTION_MODEL_OPTIONS,
+  detectFaces,
+  loadFaceDetectors,
+} from './face_detection.js';
 import { DETECTION_PRESETS, validateScales, validateNumber } from './detection_settings.js';
 
 // ─── DOM refs ────────────────────────────────────────────────────────────────
@@ -32,6 +37,7 @@ const METHOD_NAMES = ['mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks'];
 
 // ─── Detection settings DOM refs ─────────────────────────────────────────────
 const detScalesInput     = document.getElementById('det-scales');
+const detModelSelect     = document.getElementById('det-model');
 const detScoreThreshInput = document.getElementById('det-score-threshold');
 const detPaddingInput    = document.getElementById('det-padding');
 const detTileSizeInput   = document.getElementById('det-tile-size');
@@ -127,10 +133,12 @@ detScalesInput.addEventListener('change', validateScalesField);
 
 // ─── App state ───────────────────────────────────────────────────────────────
 let wasmMemory   = null;   // WebAssembly.Memory (exported from WASM module)
-let faceDetectors = [];    // MediaPipe FaceDetector instances
+let faceDetectors = [];    // Loaded detector instances (MediaPipe/OpenCV wrappers)
 let currentImage = null;   // { bitmap, width, height } of the uploaded image
 let wasmPtr      = 0;      // current allocation pointer
 let wasmSize     = 0;      // current allocation byte size
+let mediaPipeModule = null;
+let vision = null;
 
 // ─── Utility helpers ─────────────────────────────────────────────────────────
 function setStatus(msg, kind = '') {
@@ -178,16 +186,39 @@ async function init() {
 // cannot be SRI-verified through this mechanism. As a mitigation the pinned
 // version in the URL (0.10.14) is used to reduce supply-chain drift.
 async function loadFaceDetector() {
-  const { FaceDetector, FilesetResolver } = await import(
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs'
-  );
-
-  const vision = await FilesetResolver.forVisionTasks(
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
-  );
-
-  faceDetectors = await loadFaceDetectors(FaceDetector, vision, 'IMAGE');
+  const selectedModelId = detModelSelect?.value || DEFAULT_DETECTION_MODEL_ID;
+  if (!mediaPipeModule) {
+    mediaPipeModule = await import(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs'
+    );
+  }
+  if (!vision) {
+    vision = await mediaPipeModule.FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+    );
+  }
+  faceDetectors = await loadFaceDetectors(mediaPipeModule.FaceDetector, vision, 'IMAGE', selectedModelId);
 }
+
+async function reloadFaceDetectorFromSelection() {
+  const selectedModel = DETECTION_MODEL_OPTIONS.find(
+    option => option.id === (detModelSelect?.value || DEFAULT_DETECTION_MODEL_ID)
+  );
+  setStatus(`Loading ${selectedModel?.label || 'face detection'} model…`);
+  btnProcess.disabled = true;
+  try {
+    await loadFaceDetector();
+    setStatus('Ready. Upload an image to begin.', 'ok');
+    btnProcess.disabled = false;
+  } catch (err) {
+    setStatus('Failed to load selected detection model: ' + err.message, 'error');
+    console.error(err);
+  }
+}
+
+detModelSelect?.addEventListener('change', () => {
+  reloadFaceDetectorFromSelection();
+});
 
 // ─── File upload / drop ───────────────────────────────────────────────────────
 document.getElementById('upload-btn').addEventListener('click', () => fileInput.click());
