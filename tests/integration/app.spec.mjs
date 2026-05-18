@@ -50,6 +50,65 @@ const MEDIAPIPE_STUB = `
   }
 `;
 
+const OPENCV_STUB = `
+  (() => {
+    class Mat {
+      constructor() {
+        this.rows = 0;
+        this.cols = 0;
+        this.data32F = new Float32Array();
+      }
+      delete() {}
+    }
+
+    class Size {
+      constructor(width, height) {
+        this.width = width;
+        this.height = height;
+      }
+    }
+
+    globalThis.cv = {
+      COLOR_RGBA2BGR: 0,
+      Mat,
+      Size,
+      matFromImageData() {
+        return { delete() {} };
+      },
+      cvtColor() {},
+      FaceDetectorYN: {
+        create(modelPath) {
+          globalThis.__opencvModelCreates = globalThis.__opencvModelCreates || [];
+          globalThis.__opencvModelCreates.push(modelPath);
+          return {
+            setInputSize() {},
+            detect(_input, faces) {
+              const detections = globalThis.__opencvDetections || [
+                { x: 4, y: 4, width: 16, height: 16, score: 0.95 },
+              ];
+              faces.rows = detections.length;
+              faces.cols = 15;
+              const values = [];
+              for (const det of detections) {
+                values.push(
+                  det.x ?? 0,
+                  det.y ?? 0,
+                  det.width ?? 0,
+                  det.height ?? 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  det.score ?? 0.95
+                );
+              }
+              faces.data32F = new Float32Array(values);
+            },
+            delete() {},
+          };
+        },
+      },
+    };
+  })();
+`;
+
 const RED_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAK0lEQVR4nO3OIQEAAAwEoetfeovxBoGnq1tKQEBAQEBAQEBAQEBAQEBgHXhUDfhqRFDd3gAAAABJRU5ErkJggg==';
 
@@ -59,6 +118,14 @@ test.beforeEach(async ({ page }) => {
       status: 200,
       contentType: 'text/javascript; charset=utf-8',
       body: MEDIAPIPE_STUB,
+    });
+  });
+
+  await page.route('https://docs.opencv.org/4.10.0/opencv.js', async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/javascript; charset=utf-8',
+      body: OPENCV_STUB,
     });
   });
 });
@@ -201,6 +268,50 @@ test('the site anonymises an uploaded image end to end', async ({ page }) => {
     return Array.from(ctx.getImageData(12, 12, 1, 1).data);
   });
   expect(centerPixel).toEqual([0, 0, 0, 255]);
+});
+
+test('yunet model loads and runs inference in browser flow', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+
+  await page.locator('#det-model').selectOption('yunet');
+  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
+  await expect(page.locator('#btn-process')).toBeEnabled();
+
+  await page.evaluate(() => {
+    globalThis.__opencvDetections = [{ x: 4, y: 4, width: 16, height: 16, score: 0.97 }];
+  });
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+
+  const loadedModelPath = await page.evaluate(() => {
+    const paths = globalThis.__opencvModelCreates || [];
+    return paths[paths.length - 1];
+  });
+  expect(loadedModelPath).toContain('face_detection_yunet');
+});
+
+test('scrfd500 model loads and runs inference in browser flow', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+
+  await page.locator('#det-model').selectOption('scrfd500');
+  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
+  await expect(page.locator('#btn-process')).toBeEnabled();
+
+  await page.evaluate(() => {
+    globalThis.__opencvDetections = [{ x: 5, y: 5, width: 14, height: 14, score: 0.98 }];
+  });
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+
+  const loadedModelPath = await page.evaluate(() => {
+    const paths = globalThis.__opencvModelCreates || [];
+    return paths[paths.length - 1];
+  });
+  expect(loadedModelPath).toContain('scrfd_500m');
 });
 
 // ─── Detection settings panel tests ─────────────────────────────────────────

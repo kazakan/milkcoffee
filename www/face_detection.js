@@ -2,6 +2,8 @@
 // Using import.meta.url ensures correct resolution regardless of how
 // the MediaPipe library internally resolves relative paths.
 const _selfHostedModel = new URL('./models/face_detector.tflite', import.meta.url).href;
+const _selfHostedYuNetModel = new URL('./models/face_detection_yunet_2023mar.onnx', import.meta.url).href;
+const _selfHostedScrfdModel = new URL('./models/scrfd_500m_bnkps.onnx', import.meta.url).href;
 
 export const DETECTION_MODEL_ASSET_PATHS = [
   _selfHostedModel,
@@ -11,6 +13,33 @@ export const DETECTION_MODEL_ASSET_PATHS = [
   'https://storage.googleapis.com/mediapipe-models/face_detector/face_detector/float16/1/face_detector.task',
 ];
 export const DETECTION_MODEL_ASSET_PATH = DETECTION_MODEL_ASSET_PATHS[0];
+export const DEFAULT_DETECTION_MODEL_ID = 'mediapipe';
+export const DETECTION_MODEL_OPTIONS = [
+  {
+    id: 'mediapipe',
+    label: 'MediaPipe (BlazeFace)',
+    runtime: 'mediapipe',
+    assetPaths: DETECTION_MODEL_ASSET_PATHS,
+  },
+  {
+    id: 'yunet',
+    label: 'YuNet (OpenCV)',
+    runtime: 'opencv',
+    assetPaths: [
+      _selfHostedYuNetModel,
+      'https://raw.githubusercontent.com/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx',
+    ],
+  },
+  {
+    id: 'scrfd500',
+    label: 'SCRFD-500M (OpenCV, experimental)',
+    runtime: 'opencv',
+    assetPaths: [
+      _selfHostedScrfdModel,
+      'https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_500m_bnkps.onnx',
+    ],
+  },
+];
 // Extra scales (3.5, 4) help detect very small faces in small-to-medium images.
 export const DETECTION_SCALES = [1, 1.5, 2, 2.5, 3, 3.5, 4];
 // Lower threshold catches faded, partially occluded, or distant tiny faces.
@@ -35,10 +64,127 @@ export function createFaceDetectorOptions(
   };
 }
 
-export async function loadFaceDetectors(FaceDetector, vision, runningMode = 'IMAGE') {
+function getDetectionModelOption(modelId = DEFAULT_DETECTION_MODEL_ID) {
+  return DETECTION_MODEL_OPTIONS.find(option => option.id === modelId) ?? DETECTION_MODEL_OPTIONS[0];
+}
+
+let _openCvPromise = null;
+async function loadOpenCv() {
+  if (typeof globalThis.window === 'undefined') {
+    throw new Error('OpenCV runtime is only available in browser environments.');
+  }
+  if (globalThis.cv?.FaceDetectorYN) return globalThis.cv;
+  if (_openCvPromise) return _openCvPromise;
+
+  _openCvPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.async = true;
+    script.src = 'https://docs.opencv.org/4.10.0/opencv.js';
+    script.onload = () => {
+      if (globalThis.cv?.FaceDetectorYN) {
+        resolve(globalThis.cv);
+        return;
+      }
+      if (!globalThis.cv) {
+        reject(new Error('OpenCV script loaded but `cv` is unavailable.'));
+        return;
+      }
+      const previous = globalThis.cv.onRuntimeInitialized;
+      globalThis.cv.onRuntimeInitialized = () => {
+        previous?.();
+        resolve(globalThis.cv);
+      };
+    };
+    script.onerror = () => reject(new Error('Failed to load OpenCV runtime script.'));
+    document.head.appendChild(script);
+  }).catch(error => {
+    _openCvPromise = null;
+    throw error;
+  });
+
+  return _openCvPromise;
+}
+
+function createOpenCvDetectorWrapper(cv, detector) {
+  return {
+    async detect(input) {
+      const inputCtx = input.getContext('2d');
+      const imageData = inputCtx.getImageData(0, 0, input.width, input.height);
+      const rgba = cv.matFromImageData(imageData);
+      const bgr = new cv.Mat();
+      const faces = new cv.Mat();
+      try {
+        cv.cvtColor(rgba, bgr, cv.COLOR_RGBA2BGR);
+        detector.setInputSize(new cv.Size(input.width, input.height));
+        detector.detect(bgr, faces);
+
+        const detections = [];
+        if (faces.rows > 0 && faces.cols >= 4) {
+          const data = faces.data32F;
+          const stride = faces.cols;
+          for (let row = 0; row < faces.rows; row++) {
+            const base = row * stride;
+            detections.push({
+              categories: [{ score: data[base + 14] ?? 1 }],
+              boundingBox: {
+                originX: data[base],
+                originY: data[base + 1],
+                width: data[base + 2],
+                height: data[base + 3],
+              },
+            });
+          }
+        }
+        return { detections };
+      } finally {
+        faces.delete();
+        bgr.delete();
+        rgba.delete();
+      }
+    },
+    close() {
+      detector.delete();
+    },
+  };
+}
+
+async function loadOpenCvFaceDetector(modelAssetPaths) {
+  const cv = await loadOpenCv();
+  let lastError = null;
+  for (const modelAssetPath of modelAssetPaths) {
+    try {
+      const detector = cv.FaceDetectorYN.create(
+        modelAssetPath,
+        '',
+        new cv.Size(320, 320),
+        DETECTION_SCORE_THRESHOLD,
+        0.3,
+        5000
+      );
+      return [createOpenCvDetectorWrapper(cv, detector)];
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(
+    `Failed to load OpenCV detector model from known URLs. Last error: ${lastError?.message ?? 'Unknown error'}`
+  );
+}
+
+export async function loadFaceDetectors(
+  FaceDetector,
+  vision,
+  runningMode = 'IMAGE',
+  modelId = DEFAULT_DETECTION_MODEL_ID
+) {
+  const selectedModel = getDetectionModelOption(modelId);
+  if (selectedModel.runtime === 'opencv') {
+    return loadOpenCvFaceDetector(selectedModel.assetPaths);
+  }
+
   let lastError = null;
 
-  for (const modelAssetPath of DETECTION_MODEL_ASSET_PATHS) {
+  for (const modelAssetPath of selectedModel.assetPaths) {
     try {
       return [
         await FaceDetector.createFromOptions(
