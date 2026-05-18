@@ -81,16 +81,25 @@ async function loadOpenCv() {
     script.async = true;
     script.src = 'https://docs.opencv.org/4.10.0/opencv.js';
     script.onload = () => {
-      if (globalThis.cv?.FaceDetectorYN) {
-        resolve(globalThis.cv);
-        return;
-      }
-      if (!globalThis.cv) {
+      const cvExport = globalThis.cv;
+      if (!cvExport) {
         reject(new Error('OpenCV script loaded but `cv` is unavailable.'));
         return;
       }
-      const previous = globalThis.cv.onRuntimeInitialized;
-      globalThis.cv.onRuntimeInitialized = () => {
+      // Some OpenCV.js builds export cv as a thenable (Promise-based factory).
+      // Awaiting it yields the fully-initialised module object.
+      if (typeof cvExport.then === 'function') {
+        cvExport.then(resolvedCv => resolve(resolvedCv), reject);
+        return;
+      }
+      // WASM already initialised synchronously (e.g. from a compiled cache).
+      if (cvExport.FaceDetectorYN) {
+        resolve(cvExport);
+        return;
+      }
+      // WASM is still loading; onRuntimeInitialized fires when it is ready.
+      const previous = cvExport.onRuntimeInitialized;
+      cvExport.onRuntimeInitialized = () => {
         previous?.();
         resolve(globalThis.cv);
       };
@@ -153,8 +162,19 @@ async function loadOpenCvFaceDetector(modelAssetPaths) {
   let lastError = null;
   for (const modelAssetPath of modelAssetPaths) {
     try {
+      // Fetch the model file asynchronously before handing it to OpenCV.
+      // Without pre-fetching, OpenCV.js falls back to synchronous XHR
+      // internally to load the model, which blocks the browser's main thread
+      // and triggers the "page is slowing down your browser" warning.
+      // cv.FaceDetectorYN.create() expects a path in the Emscripten virtual
+      // filesystem (MEMFS), so we write the downloaded bytes there first.
+      const response = await fetch(modelAssetPath);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const modelData = new Uint8Array(await response.arrayBuffer());
+      const modelFileName = modelAssetPath.split('/').pop().split('?')[0];
+      cv.FS.writeFile('/' + modelFileName, modelData);
       const detector = cv.FaceDetectorYN.create(
-        modelAssetPath,
+        modelFileName,
         '',
         new cv.Size(320, 320),
         DETECTION_SCORE_THRESHOLD,
