@@ -76,6 +76,12 @@ const OPENCV_STUB = `
         return { delete() {} };
       },
       cvtColor() {},
+      FS: {
+        writeFile(path) {
+          globalThis.__fsWritePaths = globalThis.__fsWritePaths || [];
+          globalThis.__fsWritePaths.push(path);
+        },
+      },
       FaceDetectorYN: {
         create(modelPath) {
           globalThis.__opencvModelCreates = globalThis.__opencvModelCreates || [];
@@ -126,6 +132,16 @@ test.beforeEach(async ({ page }) => {
       status: 200,
       contentType: 'text/javascript; charset=utf-8',
       body: OPENCV_STUB,
+    });
+  });
+
+  // Stub all ONNX model file requests so the async fetch in loadOpenCvFaceDetector
+  // succeeds without real network access or files on disk.
+  await page.route('**/*.onnx', async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/octet-stream',
+      body: Buffer.alloc(32, 0),
     });
   });
 });
@@ -452,4 +468,76 @@ test('low scoreThreshold allows low-confidence detections through', async ({ pag
 
   await page.locator('#btn-process').click();
   await expect(page.locator('#status')).toContainText('face(s) anonymised');
+});
+
+// ─── Model change via dropdown tests ────────────────────────────────────────
+
+test('model dropdown switching: yunet → scrfd500 → mediapipe each re-enables process button and processes image', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+
+  // ── Switch to yunet ──────────────────────────────────────────────────────
+  await page.locator('#det-model').selectOption('yunet');
+  // After model reload the button must be re-enabled and status must be ready.
+  await expect(page.locator('#btn-process')).toBeEnabled();
+  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
+
+  await page.evaluate(() => {
+    globalThis.__opencvDetections = [{ x: 4, y: 4, width: 16, height: 16, score: 0.95 }];
+  });
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+
+  // Verify the model file passed to create() was the yunet one.
+  const yunetModelPath = await page.evaluate(() => {
+    const paths = globalThis.__opencvModelCreates || [];
+    return paths[paths.length - 1];
+  });
+  expect(yunetModelPath).toContain('face_detection_yunet');
+
+  // ── Switch to scrfd500 ───────────────────────────────────────────────────
+  await page.locator('#det-model').selectOption('scrfd500');
+  await expect(page.locator('#btn-process')).toBeEnabled();
+  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+
+  const scrfdModelPath = await page.evaluate(() => {
+    const paths = globalThis.__opencvModelCreates || [];
+    return paths[paths.length - 1];
+  });
+  expect(scrfdModelPath).toContain('scrfd_500m');
+
+  // ── Switch back to mediapipe ─────────────────────────────────────────────
+  await page.locator('#det-model').selectOption('mediapipe');
+  await expect(page.locator('#btn-process')).toBeEnabled();
+  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+});
+
+test('switching to opencv model fetches model data asynchronously before creating detector', async ({ page }) => {
+  // This test verifies that the fix is in place: the ONNX model is fetched
+  // via fetch() (non-blocking) and written to the Emscripten VFS before
+  // FaceDetectorYN.create() is called with just the filename (not a URL).
+  await page.goto('/');
+  await uploadPng(page);
+
+  await page.locator('#det-model').selectOption('yunet');
+  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
+
+  // The VFS write path should contain the yunet model filename (not a full URL).
+  const fsWritePaths = await page.evaluate(() => globalThis.__fsWritePaths || []);
+  expect(fsWritePaths.some(p => p.includes('face_detection_yunet'))).toBe(true);
+
+  // FaceDetectorYN.create() must have been called with just the filename,
+  // not the full URL (no "http" prefix in the path).
+  const createdPath = await page.evaluate(() => {
+    const paths = globalThis.__opencvModelCreates || [];
+    return paths[paths.length - 1] ?? '';
+  });
+  expect(createdPath).not.toContain('http');
+  expect(createdPath).toContain('face_detection_yunet');
 });
