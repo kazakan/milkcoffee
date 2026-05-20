@@ -18,8 +18,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      MODEL_CACHE_VERSION: v3
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,88 +54,6 @@ jobs:
 
       - name: Build WASM & generate JS bindings
         run: bash build.sh
-
-      - name: Restore face detector model cache
-        id: model-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            www/models
-          key: ${{ runner.os }}-models-${{ env.MODEL_CACHE_VERSION }}
-
-      - name: Download face detector models
-        run: |
-          set -euo pipefail
-
-          download_with_retry() {
-            local url="$1"
-            local out="$2"
-            curl -fL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 300 \
-              "$url" -o "$out"
-          }
-
-          is_lfs_pointer() {
-            local file="$1"
-            head -c 512 "$file" | grep -q 'git-lfs.github.com/spec'
-          }
-
-          ensure_not_lfs_pointer() {
-            local file="$1"
-            if is_lfs_pointer "$file"; then
-              echo "ERROR: $file is a Git LFS pointer, not the real model binary." >&2
-              exit 1
-            fi
-          }
-
-          ensure_min_size() {
-            local file="$1"
-            local min_bytes="$2"
-            local size
-            size=$(stat -c%s "$file")
-            if [ "$size" -lt "$min_bytes" ]; then
-              echo "ERROR: $file is unexpectedly small ($size bytes)." >&2
-              exit 1
-            fi
-          }
-
-          model_is_valid() {
-            local file="$1"
-            local min_bytes="$2"
-            [ -f "$file" ] || return 1
-            is_lfs_pointer "$file" && return 1
-            local size
-            size=$(stat -c%s "$file")
-            [ "$size" -ge "$min_bytes" ]
-          }
-
-          mkdir -p www/models
-
-          # MediaPipe BlazeFace (primary model)
-          if model_is_valid www/models/face_detector.tflite 100000; then
-            echo 'Using cached BlazeFace model.'
-          else
-            download_with_retry \
-              'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' \
-              www/models/face_detector.tflite
-          fi
-          ensure_min_size www/models/face_detector.tflite 100000
-
-          # SCRFD-500M (ONNX)
-          # The standalone scrfd_500m_bnkps.onnx has no reliable direct CDN.
-          # InsightFace ships the same model as det_500m.onnx inside buffalo_sc.zip
-          # which is a public GitHub release asset (no auth required).
-          if model_is_valid www/models/scrfd_500m_bnkps.onnx 2000000; then
-            echo 'Using cached SCRFD model.'
-          else
-            download_with_retry \
-              'https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip' \
-              /tmp/buffalo_sc.zip
-            unzip -j /tmp/buffalo_sc.zip 'det_500m.onnx' -d /tmp/buffalo_sc/
-            cp /tmp/buffalo_sc/det_500m.onnx www/models/scrfd_500m_bnkps.onnx
-            rm -rf /tmp/buffalo_sc.zip /tmp/buffalo_sc
-          fi
-          ensure_not_lfs_pointer www/models/scrfd_500m_bnkps.onnx
-          ensure_min_size www/models/scrfd_500m_bnkps.onnx 2000000
 
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
