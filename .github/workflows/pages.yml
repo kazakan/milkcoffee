@@ -3,6 +3,10 @@ name: Build & Deploy to GitHub Pages
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  merge_group:
+    branches: ["main"]
   workflow_dispatch:
 
 # Allow one concurrent deployment.
@@ -80,17 +84,21 @@ jobs:
       # Prevent Jekyll from ignoring files that start with _ and from
       # trying to process the wasm-bindgen output.
       - name: Add .nojekyll
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: touch www/.nojekyll
 
       - name: Setup GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v4
 
       - name: Upload Pages artefact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
           path: www/
 
   deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:
