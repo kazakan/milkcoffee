@@ -17,10 +17,19 @@ import {
   mergeBoxes,
 } from '../../www/face_detection.js';
 
-test('detection model list includes mediapipe, yunet and scrfd500', () => {
+test('detection model list includes mediapipe and scrfd500', () => {
   const ids = DETECTION_MODEL_OPTIONS.map(model => model.id);
-  assert.deepEqual(ids, ['mediapipe', 'yunet', 'scrfd500']);
+  assert.deepEqual(ids, ['mediapipe', 'scrfd500']);
   assert.equal(DEFAULT_DETECTION_MODEL_ID, 'mediapipe');
+});
+
+test('scrfd500 option uses the onnx runtime', () => {
+  const scrfd = DETECTION_MODEL_OPTIONS.find(o => o.id === 'scrfd500');
+  assert.equal(scrfd.runtime, 'onnx', 'scrfd500 must use onnx runtime');
+  assert.ok(
+    scrfd.assetPaths.some(p => /scrfd.*\.onnx/.test(p)),
+    'scrfd500 must reference the bundled onnx model'
+  );
 });
 
 test('createFaceDetectorOptions uses the MediaPipe task model', () => {

@@ -13,7 +13,7 @@ Upload a JPG or PNG → faces are detected → anonymisation is applied entirely
 
 | Feature | Detail |
 |---|---|
-| Face detection | Selectable detector: MediaPipe (BlazeFace), YuNet (OpenCV), SCRFD-500M (OpenCV, experimental) |
+| Face detection | Selectable detector: MediaPipe (BlazeFace), SCRFD-500M (ONNX) |
 | Anonymisation | Mosaic (pixelation) · Box blur · Solid mask · Cyber veil · Neon blocks |
 | Strength control | 0.0 – 1.0 slider |
 | Detection settings | Collapsible panel to tune all detection parameters (scales, score threshold, padding, tiling) |
@@ -65,7 +65,8 @@ milkcoffee/
 │   │   └── detection_settings.test.mjs  # Unit tests for validation & presets
 │   └── integration/
 │       └── app.spec.mjs    # Playwright end-to-end tests
-└── build.sh                # Rebuild WASM from source
+├── build.sh                # Rebuild WASM from source (Linux/macOS)
+└── build.bat               # Rebuild WASM from source (Windows)
 ```
 
 ## Running locally
@@ -81,7 +82,11 @@ npm install
 ### Build
 
 ```bash
+# Linux / macOS
 ./build.sh
+
+# Windows (Command Prompt or PowerShell)
+build.bat
 ```
 
 ### Serve
@@ -135,10 +140,9 @@ Each field is validated inline on change and invalid values block processing wit
 Use the **Detection model** dropdown to switch among:
 
 - `MediaPipe (BlazeFace)` (default)
-- `YuNet (OpenCV)`
-- `SCRFD-500M (OpenCV, experimental)`
+- `SCRFD-500M (ONNX)`
 
-They run in-browser on local HTTP hosting (`python3 -m http.server --directory www 8080`) like the current app flow (SCRFD-500M is experimental and may fail depending on browser/runtime support).  
+They run in-browser on local HTTP hosting (`python3 -m http.server --directory www 8080`) like the current app flow.  
 For best reliability, you can place model files in `www/models/` so the app can load them locally first.
 
 ### Presets
