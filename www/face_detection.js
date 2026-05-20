@@ -35,7 +35,7 @@ export const DETECTION_MODEL_OPTIONS = [
 export const DETECTION_SCALES = [1, 1.5, 2, 2.5, 3, 3.5, 4];
 // Lower threshold catches faded, partially occluded, or distant tiny faces.
 export const DETECTION_SCORE_THRESHOLD = 0.2;
-export const DETECTION_PADDING = 0.18;
+export const DETECTION_PADDING = 0;
 // Tile-based detection constants – used for large images (crowds, high-res photos).
 export const DETECTION_TILE_SIZE = 512;
 export const DETECTION_TILE_OVERLAP = 0.3;
