@@ -223,6 +223,7 @@ test('supports full/side/faded faces and allows downloading artifact', async ({ 
   });
 
   await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText(/Done! \d+ face\(s\) anonymised/);
   const statusText = await page.locator('#status').textContent();
   expect(statusText).toMatch(/Done! \d+ face\(s\) anonymised/);
   const detectedFaces = Number(statusText.match(/Done! (\d+) face\(s\) anonymised/)?.[1] ?? 0);
