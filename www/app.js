@@ -16,8 +16,15 @@ import {
   DETECTION_MODEL_OPTIONS,
   detectFaces,
   loadFaceDetectors,
+  preloadOnnxFaceDetectors,
 } from './face_detection.js';
 import { DETECTION_PRESETS, validateScales, validateNumber } from './detection_settings.js';
+
+if (typeof window !== 'undefined' && !globalThis.__DISABLE_ONNX_PRELOAD) {
+  // Start the ONNX Runtime warmup as early as possible so the worker can
+  // compile while the rest of the app is still loading.
+  void preloadOnnxFaceDetectors();
+}
 
 // ─── DOM refs ────────────────────────────────────────────────────────────────
 const fileInput    = document.getElementById('file-input');
@@ -34,6 +41,13 @@ const loadingText  = document.getElementById('loading-text');
 
 const ctx = canvas.getContext('2d');
 const METHOD_NAMES = ['mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks'];
+
+// ONNX detectors use fixed internal detection passes. We intentionally do not
+// read user-provided scales/tile fields for these models.
+const ONNX_INTERNAL_SCALES = [1, 1.5, 2];
+const ONNX_INTERNAL_TILE_SIZE = 512;
+const ONNX_INTERNAL_TILE_OVERLAP = 0.3;
+const ONNX_INTERNAL_TILE_THRESHOLD = 700;
 
 // ─── Detection settings DOM refs ─────────────────────────────────────────────
 const detScalesInput     = document.getElementById('det-scales');
@@ -133,12 +147,25 @@ detScalesInput.addEventListener('change', validateScalesField);
 
 // ─── App state ───────────────────────────────────────────────────────────────
 let wasmMemory   = null;   // WebAssembly.Memory (exported from WASM module)
-let faceDetectors = [];    // Loaded detector instances (MediaPipe/OpenCV wrappers)
+let faceDetectors = [];    // Loaded detector instances (MediaPipe/ONNX wrappers)
 let currentImage = null;   // { bitmap, width, height } of the uploaded image
 let wasmPtr      = 0;      // current allocation pointer
 let wasmSize     = 0;      // current allocation byte size
 let mediaPipeModule = null;
 let vision = null;
+
+window.addEventListener('onnx-progress', event => {
+  const { phase } = event.detail || {};
+  if (!detModelSelect?.disabled) return;
+  if (phase === 'init-import-start') {
+    setStatus('Loading ONNX runtime…');
+  } else if (phase === 'init-runtime-ready') {
+    setStatus('ONNX runtime ready. Loading model…');
+  } else if (phase === 'load-model-start') {
+    setStatus('Parsing ONNX face model…');
+  }
+});
+let detectorLoadGeneration = 0;
 
 // ─── Utility helpers ─────────────────────────────────────────────────────────
 function setStatus(msg, kind = '') {
@@ -155,6 +182,27 @@ function hideOverlay() {
   overlay.classList.remove('visible');
 }
 
+function getSelectedDetectionModel() {
+  return DETECTION_MODEL_OPTIONS.find(
+    option => option.id === (detModelSelect?.value || DEFAULT_DETECTION_MODEL_ID)
+  );
+}
+
+function syncDetectionInputAvailability() {
+  const selectedModel = getSelectedDetectionModel();
+  const useSinglePassDetection = selectedModel?.runtime === 'onnx';
+  const disabled = useSinglePassDetection;
+  const hint = disabled
+    ? 'Disabled for ONNX models (SCRFD): built-in detection settings are used.'
+    : '';
+
+  for (const input of [detScalesInput, detTileSizeInput, detTileOverlapInput, detTileThreshInput]) {
+    if (!input) continue;
+    input.disabled = disabled;
+    input.title = hint;
+  }
+}
+
 // ─── Strength slider ─────────────────────────────────────────────────────────
 strengthSldr.addEventListener('input', () => {
   strengthVal.textContent = (strengthSldr.value / 100).toFixed(2);
@@ -163,13 +211,15 @@ strengthSldr.addEventListener('input', () => {
 // ─── Initialisation ───────────────────────────────────────────────────────────
 async function init() {
   try {
+    syncDetectionInputAvailability();
+
     // 1. Load WASM module.
     const wasmExports = await initWasm('./pkg/milkcoffee_wasm_bg.wasm');
     wasmMemory = wasmExports.memory;
     setStatus('WASM loaded. Loading face-detection models…');
 
     // 2. Load MediaPipe Face Detection (CDN).
-    await loadFaceDetector();
+    faceDetectors = await loadFaceDetector();
 
     setStatus('Ready. Upload an image to begin.', 'ok');
     btnProcess.disabled = false;
@@ -197,26 +247,71 @@ async function loadFaceDetector() {
       'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
     );
   }
-  faceDetectors = await loadFaceDetectors(mediaPipeModule.FaceDetector, vision, 'IMAGE', selectedModelId);
+  return loadFaceDetectors(mediaPipeModule.FaceDetector, vision, 'IMAGE', selectedModelId);
+}
+
+function disposeFaceDetectors(detectors) {
+  for (const detector of detectors || []) {
+    try {
+      detector?.close?.();
+    } catch (err) {
+      console.warn('Failed to close detector cleanly:', err);
+    }
+  }
 }
 
 async function reloadFaceDetectorFromSelection() {
-  const selectedModel = DETECTION_MODEL_OPTIONS.find(
-    option => option.id === (detModelSelect?.value || DEFAULT_DETECTION_MODEL_ID)
-  );
+  const generation = ++detectorLoadGeneration;
+  const selectedModel = getSelectedDetectionModel();
+
   setStatus(`Loading ${selectedModel?.label || 'face detection'} model…`);
   btnProcess.disabled = true;
+  detModelSelect.disabled = true;
   try {
-    await loadFaceDetector();
+    const newDetectors = await loadFaceDetector();
+    if (generation !== detectorLoadGeneration) {
+      // A newer selection started loading while this one was still in flight.
+      disposeFaceDetectors(newDetectors);
+      return;
+    }
+
+    const previousDetectors = faceDetectors;
+    faceDetectors = newDetectors;
+    disposeFaceDetectors(previousDetectors);
     setStatus('Ready. Upload an image to begin.', 'ok');
-    btnProcess.disabled = false;
   } catch (err) {
-    setStatus('Failed to load selected detection model: ' + err.message, 'error');
-    console.error(err);
+    if (generation !== detectorLoadGeneration) return;
+
+    if (selectedModel?.runtime === 'onnx') {
+      try {
+        detModelSelect.value = DEFAULT_DETECTION_MODEL_ID;
+        syncDetectionInputAvailability();
+        const fallbackDetectors = await loadFaceDetector();
+        const previousDetectors = faceDetectors;
+        faceDetectors = fallbackDetectors;
+        disposeFaceDetectors(previousDetectors);
+        setStatus(
+          'Ready. Upload an image to begin. (ONNX model failed; switched to MediaPipe.)',
+          'ok'
+        );
+      } catch (fallbackErr) {
+        setStatus('Failed to load selected detection model: ' + (fallbackErr?.message || err?.message), 'error');
+        console.error(fallbackErr);
+      }
+    } else {
+      setStatus('Failed to load selected detection model: ' + err.message, 'error');
+      console.error(err);
+    }
+  } finally {
+    if (generation === detectorLoadGeneration) {
+      btnProcess.disabled = false;
+      detModelSelect.disabled = false;
+    }
   }
 }
 
 detModelSelect?.addEventListener('change', () => {
+  syncDetectionInputAvailability();
   reloadFaceDetectorFromSelection();
 });
 
@@ -301,17 +396,21 @@ async function processImage() {
       hideOverlay();
       return;
     }
+    const selectedModel = getSelectedDetectionModel();
+    const useOnnxBuiltInSettings = selectedModel?.runtime === 'onnx';
     const boxes = await detectFaces({
       bitmap,
       imgW: w,
       imgH: h,
       faceDetectors,
-      scales: detSettings.scales,
+      // SCRFD ignores user scale/tile controls and uses internal defaults
+      // tuned for better tiny-face recall than strict single-pass inference.
+      scales: useOnnxBuiltInSettings ? ONNX_INTERNAL_SCALES : detSettings.scales,
       scoreThreshold: detSettings.scoreThreshold,
       padding: detSettings.padding,
-      tileSize: detSettings.tileSize,
-      tileOverlap: detSettings.tileOverlap,
-      tileThreshold: detSettings.tileThreshold,
+      tileSize: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_SIZE : detSettings.tileSize,
+      tileOverlap: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_OVERLAP : detSettings.tileOverlap,
+      tileThreshold: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_THRESHOLD : detSettings.tileThreshold,
     });
     const boxCount = boxes.length;
 

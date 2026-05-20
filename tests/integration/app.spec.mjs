@@ -50,65 +50,61 @@ const MEDIAPIPE_STUB = `
   }
 `;
 
-const OPENCV_STUB = `
-  (() => {
-    class Mat {
-      constructor() {
-        this.rows = 0;
-        this.cols = 0;
-        this.data32F = new Float32Array();
-      }
-      delete() {}
-    }
+const ORT_STUB = `
+  (function () {
+    const DEFAULT_DETECTIONS = [{ x: 4, y: 4, width: 16, height: 16, score: 0.95 }];
 
-    class Size {
-      constructor(width, height) {
-        this.width = width;
-        this.height = height;
+    class FakeTensor {
+      constructor(type, data, dims) {
+        this.type = type;
+        this.data = data;
+        this.dims = dims;
       }
     }
 
-    globalThis.cv = {
-      COLOR_RGBA2BGR: 0,
-      Mat,
-      Size,
-      matFromImageData() {
-        return { delete() {} };
-      },
-      cvtColor() {},
-      FS: {
-        writeFile(path) {
-          globalThis.__fsWritePaths = globalThis.__fsWritePaths || [];
-          globalThis.__fsWritePaths.push(path);
-        },
-      },
-      FaceDetectorYN: {
-        create(modelPath) {
-          globalThis.__opencvModelCreates = globalThis.__opencvModelCreates || [];
-          globalThis.__opencvModelCreates.push(modelPath);
-          return {
-            setInputSize() {},
-            detect(_input, faces) {
-              const detections = globalThis.__opencvDetections || [
-                { x: 4, y: 4, width: 16, height: 16, score: 0.95 },
-              ];
-              faces.rows = detections.length;
-              faces.cols = 15;
-              const values = [];
-              for (const det of detections) {
-                values.push(
-                  det.x ?? 0,
-                  det.y ?? 0,
-                  det.width ?? 0,
-                  det.height ?? 0,
-                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                  det.score ?? 0.95
-                );
-              }
-              faces.data32F = new Float32Array(values);
-            },
-            delete() {},
-          };
+    class FakeSession {
+      get inputNames() { return ['input']; }
+      get outputNames() {
+        return ['score_8', 'score_16', 'score_32', 'bbox_8', 'bbox_16', 'bbox_32'];
+      }
+      async run(_inputs) {
+        // Minimal SCRFD-like output tensors for a 320x320 model.
+        const score8 = new Float32Array(40 * 40 * 2);
+        const score16 = new Float32Array(20 * 20 * 2);
+        const score32 = new Float32Array(10 * 10 * 2);
+        const bbox8 = new Float32Array(40 * 40 * 2 * 4);
+        const bbox16 = new Float32Array(20 * 20 * 2 * 4);
+        const bbox32 = new Float32Array(10 * 10 * 2 * 4);
+
+        // Seed one confident detection at stride-8, anchor index 0.
+        score8[0] = DEFAULT_DETECTIONS[0]?.score ?? 0.95;
+        bbox8[0] = 0.1;
+        bbox8[1] = 0.1;
+        bbox8[2] = 2.5;
+        bbox8[3] = 2.5;
+
+        return {
+          score_8: new FakeTensor('float32', score8, [3200, 1]),
+          score_16: new FakeTensor('float32', score16, [800, 1]),
+          score_32: new FakeTensor('float32', score32, [200, 1]),
+          bbox_8: new FakeTensor('float32', bbox8, [3200, 4]),
+          bbox_16: new FakeTensor('float32', bbox16, [800, 4]),
+          bbox_32: new FakeTensor('float32', bbox32, [200, 4]),
+        };
+      }
+      release() {}
+    }
+
+    globalThis.ort = {
+      env: { wasm: { wasmPaths: '' } },
+      Tensor: FakeTensor,
+      InferenceSession: {
+        async create(modelData) {
+          globalThis.__onnxModelLoads = globalThis.__onnxModelLoads || [];
+          // modelData is an ArrayBuffer here (transferred from main thread).
+          // We store a placeholder so tests can verify which model was loaded.
+          globalThis.__onnxModelLoads.push(globalThis.__pendingOnnxModelName || '');
+          return new FakeSession();
         },
       },
     };
@@ -119,6 +115,10 @@ const RED_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAK0lEQVR4nO3OIQEAAAwEoetfeovxBoGnq1tKQEBAQEBAQEBAQEBAQEBgHXhUDfhqRFDd3gAAAABJRU5ErkJggg==';
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    globalThis.__DISABLE_ONNX_PRELOAD = true;
+  });
+
   await page.route('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs', async route => {
     await route.fulfill({
       status: 200,
@@ -127,17 +127,22 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
-  await page.route('https://docs.opencv.org/4.10.0/opencv.js', async route => {
+  // Stub the ONNX Runtime CDN script – exposes globalThis.ort in the worker.
+  await page.route('**/ort.min.js', async route => {
     await route.fulfill({
       status: 200,
       contentType: 'text/javascript; charset=utf-8',
-      body: OPENCV_STUB,
+      body: ORT_STUB,
     });
   });
 
-  // Stub all ONNX model file requests so the async fetch in loadOpenCvFaceDetector
-  // succeeds without real network access or files on disk.
+  // Stub ONNX model file requests so fetch() in loadOnnxFaceDetector succeeds.
   await page.route('**/*.onnx', async route => {
+    // Expose the filename to the worker stub via a page-global so the test
+    // can later verify which model was loaded.
+    const url = route.request().url();
+    const fileName = url.split('/').pop().split('?')[0];
+    await page.evaluate(name => { globalThis.__pendingOnnxModelName = name; }, fileName).catch(() => {});
     await route.fulfill({
       status: 200,
       contentType: 'application/octet-stream',
@@ -272,6 +277,7 @@ test('the site anonymises an uploaded image end to end', async ({ page }) => {
   await page.locator('#method').selectOption('2');
   await page.locator('#btn-process').click();
 
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
   const statusText = await page.locator('#status').textContent();
   expect(statusText).toMatch(/Done! \d+ face\(s\) anonymised/);
   const detectedFaces = Number(statusText.match(/Done! (\d+) face\(s\) anonymised/)?.[1] ?? 0);
@@ -286,28 +292,6 @@ test('the site anonymises an uploaded image end to end', async ({ page }) => {
   expect(centerPixel).toEqual([0, 0, 0, 255]);
 });
 
-test('yunet model loads and runs inference in browser flow', async ({ page }) => {
-  await page.goto('/');
-  await uploadPng(page);
-
-  await page.locator('#det-model').selectOption('yunet');
-  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
-  await expect(page.locator('#btn-process')).toBeEnabled();
-
-  await page.evaluate(() => {
-    globalThis.__opencvDetections = [{ x: 4, y: 4, width: 16, height: 16, score: 0.97 }];
-  });
-
-  await page.locator('#btn-process').click();
-  await expect(page.locator('#status')).toContainText('face(s) anonymised');
-
-  const loadedModelPath = await page.evaluate(() => {
-    const paths = globalThis.__opencvModelCreates || [];
-    return paths[paths.length - 1];
-  });
-  expect(loadedModelPath).toContain('face_detection_yunet');
-});
-
 test('scrfd500 model loads and runs inference in browser flow', async ({ page }) => {
   await page.goto('/');
   await uploadPng(page);
@@ -316,15 +300,11 @@ test('scrfd500 model loads and runs inference in browser flow', async ({ page })
   await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
   await expect(page.locator('#btn-process')).toBeEnabled();
 
-  await page.evaluate(() => {
-    globalThis.__opencvDetections = [{ x: 5, y: 5, width: 14, height: 14, score: 0.98 }];
-  });
-
   await page.locator('#btn-process').click();
   await expect(page.locator('#status')).toContainText('face(s) anonymised');
 
   const loadedModelPath = await page.evaluate(() => {
-    const paths = globalThis.__opencvModelCreates || [];
+    const paths = globalThis.__onnxModelLoads || [];
     return paths[paths.length - 1];
   });
   expect(loadedModelPath).toContain('scrfd_500m');
@@ -347,6 +327,30 @@ test('detection settings panel can be opened and contains all inputs', async ({ 
                     'det-tile-size', 'det-tile-overlap', 'det-tile-threshold']) {
     await expect(page.locator(`#${id}`)).toBeVisible();
   }
+});
+
+test('scrfd disables scales and tile inputs in detection settings', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('details.det-settings > summary').click();
+
+  const detScales = page.locator('#det-scales');
+  const detTileSize = page.locator('#det-tile-size');
+  const detTileOverlap = page.locator('#det-tile-overlap');
+  const detTileThreshold = page.locator('#det-tile-threshold');
+
+  await page.locator('#det-model').selectOption('scrfd500');
+  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
+  await expect(detScales).toBeDisabled();
+  await expect(detTileSize).toBeDisabled();
+  await expect(detTileOverlap).toBeDisabled();
+  await expect(detTileThreshold).toBeDisabled();
+
+  await page.locator('#det-model').selectOption('mediapipe');
+  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
+  await expect(detScales).toBeEnabled();
+  await expect(detTileSize).toBeEnabled();
+  await expect(detTileOverlap).toBeEnabled();
+  await expect(detTileThreshold).toBeEnabled();
 });
 
 test('preset buttons populate all detection fields with valid values', async ({ page }) => {
@@ -472,28 +476,9 @@ test('low scoreThreshold allows low-confidence detections through', async ({ pag
 
 // ─── Model change via dropdown tests ────────────────────────────────────────
 
-test('model dropdown switching: yunet → scrfd500 → mediapipe each re-enables process button and processes image', async ({ page }) => {
+test('model dropdown switching: scrfd500 → mediapipe re-enables process button and processes image', async ({ page }) => {
   await page.goto('/');
   await uploadPng(page);
-
-  // ── Switch to yunet ──────────────────────────────────────────────────────
-  await page.locator('#det-model').selectOption('yunet');
-  // After model reload the button must be re-enabled and status must be ready.
-  await expect(page.locator('#btn-process')).toBeEnabled();
-  await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
-
-  await page.evaluate(() => {
-    globalThis.__opencvDetections = [{ x: 4, y: 4, width: 16, height: 16, score: 0.95 }];
-  });
-  await page.locator('#btn-process').click();
-  await expect(page.locator('#status')).toContainText('face(s) anonymised');
-
-  // Verify the model file passed to create() was the yunet one.
-  const yunetModelPath = await page.evaluate(() => {
-    const paths = globalThis.__opencvModelCreates || [];
-    return paths[paths.length - 1];
-  });
-  expect(yunetModelPath).toContain('face_detection_yunet');
 
   // ── Switch to scrfd500 ───────────────────────────────────────────────────
   await page.locator('#det-model').selectOption('scrfd500');
@@ -504,7 +489,7 @@ test('model dropdown switching: yunet → scrfd500 → mediapipe each re-enables
   await expect(page.locator('#status')).toContainText('face(s) anonymised');
 
   const scrfdModelPath = await page.evaluate(() => {
-    const paths = globalThis.__opencvModelCreates || [];
+    const paths = globalThis.__onnxModelLoads || [];
     return paths[paths.length - 1];
   });
   expect(scrfdModelPath).toContain('scrfd_500m');
@@ -518,26 +503,46 @@ test('model dropdown switching: yunet → scrfd500 → mediapipe each re-enables
   await expect(page.locator('#status')).toContainText('face(s) anonymised');
 });
 
-test('switching to opencv model fetches model data asynchronously before creating detector', async ({ page }) => {
-  // This test verifies that the fix is in place: the ONNX model is fetched
-  // via fetch() (non-blocking) and written to the Emscripten VFS before
-  // FaceDetectorYN.create() is called with just the filename (not a URL).
+test('onnx model failure falls back to MediaPipe without freezing UI', async ({ page }) => {
+  // Force ONNX model download failure and verify the app auto-recovers by
+  // switching back to MediaPipe instead of staying stuck in loading state.
+  await page.unroute('**/*.onnx');
+  await page.route('**/*.onnx', async route => {
+    await route.fulfill({
+      status: 404,
+      contentType: 'text/plain; charset=utf-8',
+      body: 'not found',
+    });
+  });
+
   await page.goto('/');
   await uploadPng(page);
 
-  await page.locator('#det-model').selectOption('yunet');
+  await page.locator('#det-model').selectOption('scrfd500');
+  await expect(page.locator('#status')).toContainText('Ready. Upload an image to begin.');
+  await expect(page.locator('#status')).toContainText('switched to MediaPipe');
+  await expect(page.locator('#btn-process')).toBeEnabled();
+  await expect(page.locator('#det-model')).toHaveValue('mediapipe');
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+  await expect(page.locator('#btn-process')).toBeEnabled();
+});
+
+test('switching to onnx model fetches model data asynchronously before creating session', async ({ page }) => {
+  // This test verifies that the ONNX model is fetched via fetch() (non-blocking)
+  // and the filename (not a full URL) is recorded in __onnxModelLoads.
+  await page.goto('/');
+  await uploadPng(page);
+
+  await page.locator('#det-model').selectOption('scrfd500');
   await expect(page.locator('#status')).toHaveText('Ready. Upload an image to begin.');
 
-  // The VFS write path should contain the yunet model filename (not a full URL).
-  const fsWritePaths = await page.evaluate(() => globalThis.__fsWritePaths || []);
-  expect(fsWritePaths.some(p => p.includes('face_detection_yunet'))).toBe(true);
-
-  // FaceDetectorYN.create() must have been called with just the filename,
-  // not the full URL (no "http" prefix in the path).
-  const createdPath = await page.evaluate(() => {
-    const paths = globalThis.__opencvModelCreates || [];
+  // The model filename (not a full URL) should appear in __onnxModelLoads.
+  const loadedName = await page.evaluate(() => {
+    const paths = globalThis.__onnxModelLoads || [];
     return paths[paths.length - 1] ?? '';
   });
-  expect(createdPath).not.toContain('http');
-  expect(createdPath).toContain('face_detection_yunet');
+  expect(loadedName).not.toContain('http');
+  expect(loadedName).toContain('scrfd_500m');
 });
