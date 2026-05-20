@@ -55,6 +55,22 @@ jobs:
       - name: Build WASM & generate JS bindings
         run: bash build.sh
 
+      - name: Download face detector models
+        run: |
+          set -euo pipefail
+          mkdir -p www/models
+
+          curl -fL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 300 \
+            'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' \
+            -o www/models/face_detector.tflite
+
+          curl -fL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 300 \
+            'https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip' \
+            -o /tmp/buffalo_sc.zip
+          unzip -j /tmp/buffalo_sc.zip 'det_500m.onnx' -d /tmp/buffalo_sc/
+          cp /tmp/buffalo_sc/det_500m.onnx www/models/scrfd_500m_bnkps.onnx
+          rm -rf /tmp/buffalo_sc.zip /tmp/buffalo_sc
+
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 

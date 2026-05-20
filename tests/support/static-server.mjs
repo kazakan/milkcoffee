@@ -1,12 +1,15 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '../../www');
 const port = Number(process.env.PORT || 4173);
+const PROXY_TIMEOUT_MS = 15000;
+const PROXY_MAX_BYTES = 25 * 1024 * 1024;
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -25,6 +28,20 @@ const contentTypes = new Map([
 // URLs directly due to CORS restrictions (e.g. GitHub raw), so the app
 // can route those requests through this server instead.
 // Usage: GET /proxy-model?url=https://...
+function isBlockedProxyHost(hostname) {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '127.0.0.1' || host === '::1') return true;
+  if (!net.isIP(host)) return false;
+  if (host.startsWith('10.') || host.startsWith('192.168.')) return true;
+  if (host.startsWith('172.')) {
+    const second = Number(host.split('.')[1]);
+    return second >= 16 && second <= 31;
+  }
+  if (host.startsWith('169.254.')) return true;
+  return false;
+}
+
 async function handleProxyModel(req, res) {
   const requestUrl = new URL(req.url, `http://127.0.0.1:${port}`);
   const target = requestUrl.searchParams.get('url');
@@ -43,17 +60,42 @@ async function handleProxyModel(req, res) {
     res.writeHead(400).end('Only HTTPS URLs are proxied');
     return;
   }
+  if (isBlockedProxyHost(parsed.hostname)) {
+    res.writeHead(400).end('Blocked target host');
+    return;
+  }
   try {
-    const upstream = await fetch(target);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+    const upstream = await fetch(target, {
+      signal: controller.signal,
+      redirect: 'error',
+    }).finally(() => clearTimeout(timer));
+    const upstreamLength = Number(upstream.headers.get('content-length') || NaN);
+    if (Number.isFinite(upstreamLength) && upstreamLength > PROXY_MAX_BYTES) {
+      res.writeHead(413).end('Upstream payload too large');
+      return;
+    }
     res.writeHead(upstream.status, {
       'Content-Type': upstream.headers.get('Content-Type') || 'application/octet-stream',
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'no-store',
     });
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
     const reader = upstream.body.getReader();
+    let streamedBytes = 0;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      streamedBytes += value.byteLength;
+      if (streamedBytes > PROXY_MAX_BYTES) {
+        if (!res.headersSent) res.writeHead(413);
+        res.end('Upstream payload too large');
+        return;
+      }
       res.write(value);
     }
     res.end();

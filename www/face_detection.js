@@ -117,7 +117,10 @@ function _ensureOrtWorker() {
 
   _ortWorker.addEventListener('error', e => {
     const err = new Error('ONNX Worker crashed: ' + (e.message || 'unknown'));
-    for (const { reject } of _ortWorkerPending.values()) reject(err);
+    for (const { reject, timer } of _ortWorkerPending.values()) {
+      if (timer) clearTimeout(timer);
+      reject(err);
+    }
     _ortWorkerPending.clear();
     _ortWorker = null;
     _ortWorkerReady = null;
@@ -159,7 +162,7 @@ function _createOnnxDetectorWrapper(modelKey) {
     async detect(input) {
       const imageData = input.getContext('2d').getImageData(0, 0, input.width, input.height);
       // Transfer the buffer (zero-copy send to worker).
-      const buf = imageData.data.buffer.slice(0);
+      const buf = imageData.data.buffer;
       const result = await _ortWorkerCall(
         { type: 'detect', modelKey, imageDataBuffer: buf, width: input.width, height: input.height },
         [buf],
@@ -236,7 +239,7 @@ function _resolveModelPaths(paths) {
       try {
         const parsed = new URL(url);
         // Only rewrite external (off-origin) HTTPS URLs.
-        if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+        if (parsed.protocol === 'https:' &&
             parsed.hostname !== hostname) {
           return `${origin}/proxy-model?url=${encodeURIComponent(url)}`;
         }

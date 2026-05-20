@@ -199,22 +199,6 @@ function normScore(raw) {
 }
 
 /**
- * SCRFD anchor generation for one stride level.
- * numAnchors is 2 for the 500M model.
- */
-function generateAnchors(featH, featW, stride, numAnchors) {
-  const anchors = [];
-  for (let y = 0; y < featH; y++) {
-    for (let x = 0; x < featW; x++) {
-      for (let a = 0; a < numAnchors; a++) {
-        anchors.push({ cx: (x + 0.5) * stride, cy: (y + 0.5) * stride });
-      }
-    }
-  }
-  return anchors;
-}
-
-/**
  * SCRFD (buffalo_sc det_500m) multi-scale output.
  * Tensors ordered: score_8, score_16, score_32, bbox_8, bbox_16, bbox_32
  * (optionally + kps_8/16/32 for 9-output models).
@@ -263,17 +247,23 @@ function parseScrfdOutput(outputs, outputNames, modelW, modelH, transform, origW
 
     if (!scoreTensor || !bboxTensor) continue;
 
-    const anchors    = generateAnchors(featH, featW, stride, numAnchorsPerPoint);
     const scores     = scoreTensor.data;
     const bboxes     = bboxTensor.data;
     const scoreStride = scoreTensor.dims[scoreTensor.dims.length - 1]; // 1 or 2
+    const scoreCount = scoreStride > 0 ? Math.floor(scores.length / scoreStride) : 0;
+    const bboxCount = Math.floor(bboxes.length / 4);
+    if (scoreCount < expectedAnchors || bboxCount < expectedAnchors) continue;
 
-    for (let i = 0; i < anchors.length; i++) {
+    for (let i = 0; i < expectedAnchors; i++) {
       // Some exports have 2 class columns [bg, face]; use the face (last) col.
       const rawScore = scoreStride === 1 ? scores[i] : scores[i * scoreStride + (scoreStride - 1)];
       const score    = normScore(rawScore);
       if (score < scoreThreshold) continue;
-      const { cx, cy } = anchors[i];
+      const pointIndex = Math.floor(i / numAnchorsPerPoint);
+      const x = pointIndex % featW;
+      const y = Math.floor(pointIndex / featW);
+      const cx = (x + 0.5) * stride;
+      const cy = (y + 0.5) * stride;
       const x1 = (cx - bboxes[i * 4]     * stride);
       const y1 = (cy - bboxes[i * 4 + 1] * stride);
       const x2 = (cx + bboxes[i * 4 + 2] * stride);

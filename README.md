@@ -143,7 +143,22 @@ Use the **Detection model** dropdown to switch among:
 - `SCRFD-500M (ONNX)`
 
 They run in-browser on local HTTP hosting (`python3 -m http.server --directory www 8080`) like the current app flow.  
-For best reliability, you can place model files in `www/models/` so the app can load them locally first.
+For best reliability, place model files in `www/models/` so the app can load them locally first.
+
+- MediaPipe local model: `www/models/face_detector.tflite`
+- SCRFD local model: `www/models/scrfd_500m_bnkps.onnx`
+
+You can fetch both files with:
+
+```bash
+mkdir -p www/models
+curl -fL 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' \
+  -o www/models/face_detector.tflite
+curl -fL 'https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip' \
+  -o /tmp/buffalo_sc.zip
+unzip -j /tmp/buffalo_sc.zip 'det_500m.onnx' -d /tmp/buffalo_sc/
+cp /tmp/buffalo_sc/det_500m.onnx www/models/scrfd_500m_bnkps.onnx
+```
 
 ### Presets
 
