@@ -10,6 +10,13 @@ const rootDir = path.resolve(__dirname, '../../www');
 const port = Number(process.env.PORT || 4173);
 const PROXY_TIMEOUT_MS = 15000;
 const PROXY_MAX_BYTES = 25 * 1024 * 1024;
+const PROXY_ALLOWED_HOSTS = new Set([
+  'storage.googleapis.com',
+  'github.com',
+  'raw.githubusercontent.com',
+  'objects.githubusercontent.com',
+  'cdn.jsdelivr.net',
+]);
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -42,6 +49,11 @@ function isBlockedProxyHost(hostname) {
   return false;
 }
 
+function isAllowedProxyHost(hostname) {
+  const host = hostname.toLowerCase();
+  return PROXY_ALLOWED_HOSTS.has(host);
+}
+
 async function handleProxyModel(req, res) {
   const requestUrl = new URL(req.url, `http://127.0.0.1:${port}`);
   const target = requestUrl.searchParams.get('url');
@@ -60,7 +72,7 @@ async function handleProxyModel(req, res) {
     res.writeHead(400).end('Only HTTPS URLs are proxied');
     return;
   }
-  if (isBlockedProxyHost(parsed.hostname)) {
+  if (!isAllowedProxyHost(parsed.hostname) || isBlockedProxyHost(parsed.hostname)) {
     res.writeHead(400).end('Blocked target host');
     return;
   }
