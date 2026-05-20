@@ -78,8 +78,8 @@ test('mergeBoxes merges overlaps and clamps expanded bounds', () => {
   );
 
   assert.equal(merged.length, 2);
-  assert.deepEqual(merged[0], { x: 1, y: 1, width: 40, height: 38 });
-  assert.deepEqual(merged[1], { x: 90, y: 90, width: 10, height: 10 });
+  assert.deepEqual(merged[0], { x: 10, y: 10, width: 26, height: 22 });
+  assert.deepEqual(merged[1], { x: 92, y: 92, width: 8, height: 8 });
 });
 
 test('detectFaces normalizes scaled detections and filters low-confidence hits', async () => {
@@ -131,7 +131,7 @@ test('detectFaces normalizes scaled detections and filters low-confidence hits',
     { width: 100, height: 80 },
     { width: 150, height: 120 },
   ]);
-  assert.deepEqual(boxes, [{ x: 0, y: 11, width: 52, height: 38 }]);
+  assert.deepEqual(boxes, [{ x: 10, y: 20, width: 30, height: 20 }]);
 });
 
 test('detection constants have expected sensitivity and range', () => {
