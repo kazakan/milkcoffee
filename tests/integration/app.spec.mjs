@@ -328,6 +328,8 @@ test('detection settings panel can be opened and contains all inputs', async ({ 
                     'det-tile-size', 'det-tile-overlap', 'det-tile-threshold']) {
     await expect(page.locator(`#${id}`)).toBeVisible();
   }
+
+  await expect(page.locator('#det-padding')).toHaveValue('0');
 });
 
 test('scrfd disables scales and tile inputs in detection settings', async ({ page }) => {
