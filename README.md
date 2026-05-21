@@ -2,71 +2,72 @@
 
 > Client-side face anonymisation — **Rust + WebAssembly**, zero-copy single-buffer design.
 
-![UI screenshot](https://github.com/user-attachments/assets/4c84a8c3-89c5-4997-93b7-b80d607a255a)
+![Current UI screenshot](https://github.com/user-attachments/assets/cf2f87bf-3700-4032-9699-96ae7d3cb3ba)
 
 ## What it does
 
-Upload a JPG or PNG → faces are detected → anonymisation is applied entirely inside your browser.  
-**No image data leaves your device at any point.**
+Upload a JPG or PNG, detect faces in-browser, and apply anonymisation without uploading the image itself.
 
 ## Features
 
 | Feature | Detail |
 |---|---|
-| Face detection | Selectable detector: MediaPipe (BlazeFace), SCRFD-500M (ONNX) |
-| Anonymisation | Mosaic (pixelation) · Box blur · Solid mask · Cyber veil · Neon blocks |
-| Strength control | 0.0 – 1.0 slider |
-| Detection settings | Collapsible panel to tune all detection parameters (scales, score threshold, padding, tiling) |
-| Detection presets | One-click presets for common scenarios (default, big image, small image, small faces, big faces) |
-| Auto-resize | Images wider than 1280 px are resized before processing |
-| Download | One-click PNG export |
+| Face detection | Selectable detector: MediaPipe (BlazeFace) or SCRFD-500M (ONNX) |
+| Anonymisation | Mosaic, blur, solid mask, cyber veil, neon blocks |
+| Strength control | 0.00–1.00 slider |
+| Detection controls | Editable scales, threshold, padding, tiling, and presets |
+| ONNX execution | Runs in a worker so inference does not block the main UI thread |
+| Export | Download the processed result as PNG |
 
 ## Architecture
 
-```
+```text
 Browser
- ├── app.js  (orchestration, face detection via MediaPipe CDN)
- │     │
- │     ├─ alloc(size) ──────────────────────► WASM linear memory
- │     │       ↑ one copy: decoded pixels → WASM buffer
- │     ├─ process(ptr, w, h, boxes, …) ───► in-place RGBA mutation
- │     └─ Uint8ClampedArray view ◄───────── same buffer, no copy
- │
- └── www/pkg/  (wasm-bindgen generated JS + .wasm binary)
+ ├── www/index.html              # UI shell
+ ├── www/app.js                  # App flow, WASM bridge, detector switching
+ ├── www/face_detection.js       # MediaPipe + SCRFD detection orchestration
+ ├── www/onnx-detection-worker.js# ONNX Runtime Web worker
+ └── www/pkg/                    # wasm-bindgen generated JS + .wasm
+        │
+        ├─ alloc(size) ─────────────────────► WASM linear memory
+        │      ↑ one copy: decoded pixels → WASM buffer
+        ├─ process(ptr, w, h, boxes, …) ───► in-place RGBA mutation
+        └─ Uint8ClampedArray view ◄──────── same buffer, no extra copy
 ```
 
 ### Zero-copy memory design
 
-1. `alloc(size)` allocates the pixel buffer **inside WASM memory** and returns a pointer.  
-2. JavaScript creates a `Uint8ClampedArray` **view** into `wasm.memory.buffer` — no copy.  
-3. Decoded image pixels are copied **once** into that view (the single unavoidable copy).  
-4. `process()` modifies the buffer **in-place** — no `Vec` cloning, no return value.  
-5. The canvas is rendered by reading the **same** WASM memory address — no extra copy.
+1. `alloc(size)` allocates the pixel buffer inside WASM memory.
+2. JavaScript creates a `Uint8ClampedArray` view into `wasm.memory.buffer`.
+3. Decoded image pixels are copied once into that view.
+4. `process()` mutates the same buffer in place.
+5. The canvas renders from the same memory region.
 
 ## Project layout
 
-```
+```text
 milkcoffee/
-├── wasm/                   # Rust crate (compiled to WASM)
+├── .github/workflows/pages.yml      # CI build, tests, Pages deploy
+├── wasm/
 │   ├── Cargo.toml
-│   └── src/lib.rs          # alloc · dealloc · process (mosaic/blur/solid/cyber/neon)
-├── www/                    # Static web frontend
+│   └── src/lib.rs                   # alloc / dealloc / process
+├── www/
 │   ├── index.html
-│   ├── app.js              # Orchestration, UI, WASM bridge
-│   ├── face_detection.js   # MediaPipe face detection + tiling logic
-│   ├── detection_settings.js  # Pure validation helpers + detection presets
-│   └── pkg/                # wasm-bindgen output (committed for convenience)
-│       ├── milkcoffee_wasm.js
-│       ├── milkcoffee_wasm_bg.wasm
-│       └── *.d.ts
+│   ├── app.js
+│   ├── detection_settings.js
+│   ├── face_detection.js
+│   ├── models/                      # gitignored local/CI-downloaded detector assets
+│   ├── onnx-detection-worker.js
+│   └── pkg/                         # committed wasm-bindgen output
 ├── tests/
-│   ├── unit/
-│   │   ├── face_detection.test.mjs       # Unit tests for detection logic
-│   │   └── detection_settings.test.mjs  # Unit tests for validation & presets
-│   └── integration/
-│       └── app.spec.mjs    # Playwright end-to-end tests
-├── build.sh                # Rebuild WASM from source (Linux/macOS)
-└── build.bat               # Rebuild WASM from source (Windows)
+│   ├── integration/app.spec.mjs
+│   ├── support/static-server.mjs
+│   └── unit/
+│       ├── detection_settings.test.mjs
+│       └── face_detection.test.mjs
+├── build.sh
+├── build.bat
+└── README.md
 ```
 
 ## Running locally
@@ -75,8 +76,23 @@ milkcoffee/
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli
+cargo install wasm-bindgen-cli --version 0.2.121 --locked
 npm install
+```
+
+### Optional local model files
+
+MilkCoffee works best when detector assets are present in `www/models/`.
+
+```bash
+mkdir -p www/models
+curl -fL 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' \
+  -o www/models/face_detector.tflite
+curl -fL 'https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip' \
+  -o /tmp/buffalo_sc.zip
+unzip -j /tmp/buffalo_sc.zip 'det_500m.onnx' -d /tmp/buffalo_sc/
+cp /tmp/buffalo_sc/det_500m.onnx www/models/scrfd_500m_bnkps.onnx
+rm -rf /tmp/buffalo_sc.zip /tmp/buffalo_sc
 ```
 
 ### Build
@@ -85,7 +101,7 @@ npm install
 # Linux / macOS
 ./build.sh
 
-# Windows (Command Prompt or PowerShell)
+# Windows
 build.bat
 ```
 
@@ -96,83 +112,94 @@ python3 -m http.server --directory www 8080
 # open http://localhost:8080
 ```
 
-> **Note:** The app uses ES modules (`<script type="module">`), so it must be served over HTTP (not opened as a `file://` URL).
+> The app uses ES modules, so it must be served over HTTP rather than opened with `file://`.
 
 ### Tests
 
 ```bash
-# JS unit tests + Playwright integration tests
-npm test
-
-# Rust unit tests only
+# Rust tests
 npm run test:rust
-# or equivalently:
-cargo test --manifest-path wasm/Cargo.toml
+
+# JS unit tests
+node --test tests/unit/**/*.test.mjs
+
+# Playwright integration tests
+npx playwright install chromium
+npm run test:integration
+
+# Combined JS test suite
+npm test
 ```
 
 ## Anonymisation methods
 
 | Method | WASM function | Strength effect |
 |---|---|---|
-| Mosaic | `apply_mosaic` | block size: 4 px → half the face dimension |
-| Blur | `apply_blur` | radius: 2 px → quarter the face dimension |
-| Solid | `apply_solid` | N/A — always fills with black |
-| Cyber veil | `apply_cyber` | grid density and scanline spacing |
-| Neon blocks | `apply_neon` | block size: 6 px → third of the face dimension |
+| Mosaic | `apply_mosaic` | Block size scales with face size |
+| Blur | `apply_blur` | Blur radius scales with face size |
+| Solid | `apply_solid` | Always fills the region |
+| Cyber veil | `apply_cyber` | Adjusts grid density and scanlines |
+| Neon blocks | `apply_neon` | Block size scales with face size |
 
 ## Detection settings
 
-The collapsible **Detection Settings** panel (closed by default) exposes all face-detection parameters:
+The collapsible **Detection Settings** panel exposes the current MediaPipe-oriented defaults:
 
 | Field | Default | Description |
 |---|---|---|
-| Scales | `1, 1.5, 2, …` | Upscale factors to run the detector at |
-| Score threshold | `0.2` | Minimum confidence to accept a detection |
-| Padding | `0.15` | Extra margin added around each detected box |
-| Tile size | `480` | Tile dimension (px) for large-image tiling; `0` disables tiling |
-| Tile overlap | `0.3` | Fraction of overlap between adjacent tiles |
-| Tile threshold | `640` | Image dimension (px) above which tiling activates |
+| Scales | `1, 1.5, 2, 2.5, 3, 3.5, 4` | Upscale passes for small-face recall |
+| Score threshold | `0.2` | Minimum confidence to keep a detection |
+| Padding | `0` | Extra margin around each detected box |
+| Tile size | `512` | Tile dimension in pixels; `0` disables tiling |
+| Tile overlap | `0.3` | Overlap fraction between adjacent tiles |
+| Tile threshold | `640` | Tiling activates above this image dimension |
 
-Each field is validated inline on change and invalid values block processing with a descriptive error message.
+Invalid values are validated inline and block processing until corrected.
 
 ### Detection model selection
 
-Use the **Detection model** dropdown to switch among:
-
-- `MediaPipe (BlazeFace)` (default)
-- `SCRFD-500M (ONNX)`
-
-They run in-browser on local HTTP hosting (`python3 -m http.server --directory www 8080`) like the current app flow.  
-For best reliability, place model files in `www/models/` so the app can load them locally first.
-
-- MediaPipe local model: `www/models/face_detector.tflite`
-- SCRFD local model: `www/models/scrfd_500m_bnkps.onnx`
-
-You can fetch both files with:
-
-```bash
-mkdir -p www/models
-curl -fL 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' \
-  -o www/models/face_detector.tflite
-curl -fL 'https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip' \
-  -o /tmp/buffalo_sc.zip
-unzip -j /tmp/buffalo_sc.zip 'det_500m.onnx' -d /tmp/buffalo_sc/
-cp /tmp/buffalo_sc/det_500m.onnx www/models/scrfd_500m_bnkps.onnx
-```
+- `MediaPipe (BlazeFace)` is the default option.
+- `SCRFD-500M (ONNX)` runs through `onnxruntime-web` in `www/onnx-detection-worker.js`.
+- When SCRFD is selected, the scale and tiling fields in the UI are disabled because the ONNX path uses built-in detection settings.
+- If SCRFD fails to load, the app falls back to MediaPipe automatically.
 
 ### Presets
 
 | Button | Intended for |
 |---|---|
-| 🔄 Default | Module-level defaults |
-| 🖼 Big image | Crowd / high-resolution photos |
+| 🔄 Default | Module defaults |
+| 🖼 Big image | High-resolution or crowd photos |
 | 📷 Small image | Portraits and selfies |
-| 🔬 Small faces | Tiny or distant faces |
-| 🙂 Big faces | Close-up, prominent faces |
+| 🔬 Small faces | Distant or tiny faces |
+| 🙂 Big faces | Close-up faces |
+
+## Third-party OSS notices
+
+MilkCoffee references or downloads third-party components for optional detector runtimes and model assets:
+
+| Component | How it is used here | Upstream notice |
+|---|---|---|
+| MediaPipe Tasks Vision | Browser-loaded face detector runtime for the MediaPipe option | Apache License 2.0 (`google-ai-edge/mediapipe`) |
+| ONNX Runtime Web | Browser worker runtime for ONNX inference | MIT License (`microsoft/onnxruntime`) |
+| InsightFace SCRFD release asset | Source archive used to obtain `det_500m.onnx` for the SCRFD option | InsightFace repository code is published under MIT, and the `detection/scrfd` subtree includes an Apache 2.0 notice from OpenMMLab |
+
+For the SCRFD model archive specifically, review the current upstream InsightFace terms before redistribution or commercial use. Their repository README states that some trained models and related data may carry separate usage limits.
+
+## AI agent handoff
+
+This section is for future AI/code agents that need a fast repo-state summary:
+
+- The user-facing app lives entirely under `www/`, with `www/app.js` as the main browser entrypoint.
+- Face detection is split between MediaPipe and SCRFD/ONNX logic in `www/face_detection.js`.
+- ONNX inference runs in `www/onnx-detection-worker.js`; the UI intentionally stays responsive while the worker loads or runs models.
+- Rust image processing lives in `wasm/src/lib.rs`; generated web artifacts are committed under `www/pkg/`.
+- CI is defined in `.github/workflows/pages.yml`: it installs Rust + Node, pins `wasm-bindgen-cli` to `0.2.121`, downloads model files into `www/models/`, runs Rust and frontend tests, and only deploys Pages on pushes to `main`.
+- Local model assets in `www/models/` are ignored by git and are expected to be recreated locally or by CI.
+- Playwright integration tests use `tests/support/static-server.mjs` and network stubs instead of relying on the real external CDNs during test execution.
 
 ## Edge cases handled
 
-- **No faces detected** — original image is shown unchanged.
-- **Face box outside image bounds** — coordinates are clamped.
-- **Multiple faces** — all are processed in a single WASM call.
-- **Very small faces** — minimum block/radius of 1 px enforced.
+- No faces detected: the original image remains unchanged.
+- Out-of-bounds boxes: coordinates are clamped before processing.
+- Multiple faces: all boxes are processed in a single WASM call.
+- Small faces: minimum block/radius safeguards are enforced.
