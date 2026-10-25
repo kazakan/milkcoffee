@@ -5,7 +5,8 @@
 // Message protocol (main → worker):
 //   { type:'init',       id }
 //   { type:'load-model', id, modelData:ArrayBuffer, modelFileName, scoreThreshold }
-//   { type:'detect',     id, modelKey, imageDataBuffer:ArrayBuffer, width, height }
+//   { type:'detect',     id, modelKey, imageBitmap:ImageBitmap, width, height }
+//   { type:'detect',     id, modelKey, imageDataBuffer:ArrayBuffer, width, height } (fallback)
 //
 // Message protocol (worker → main):
 //   { type:'ready',        id }
@@ -67,29 +68,55 @@ async function ensureOrt() {
 
 // ── Image pre-processing ──────────────────────────────────────────────────────
 
-/**
- * Resize RGBA pixel buffer (Uint8ClampedArray or ArrayBuffer) from srcW×srcH
- * to dstW×dstH using OffscreenCanvas for hardware-accelerated scaling.
- */
-function resizeRgba(rgbaBuffer, srcW, srcH, dstW, dstH) {
-  const src = new OffscreenCanvas(srcW, srcH);
-  const srcCtx = src.getContext('2d');
-  srcCtx.putImageData(
-    new ImageData(new Uint8ClampedArray(rgbaBuffer), srcW, srcH),
-    0, 0
-  );
-  const dst = new OffscreenCanvas(dstW, dstH);
-  dst.getContext('2d').drawImage(src, 0, 0, dstW, dstH);
-  return dst.getContext('2d').getImageData(0, 0, dstW, dstH).data;
+// Canvases and tensor buffers are reused across detect calls: a typical run
+// sends dozens of tiles of the same size, and re-allocating per call churns
+// the GC for no benefit. Detection calls are processed one at a time.
+const _canvasCache = new Map();
+const _tensorCache = new Map();
+
+function getCanvas(kind, w, h) {
+  let entry = _canvasCache.get(kind);
+  if (!entry || entry.canvas.width !== w || entry.canvas.height !== h) {
+    const canvas = new OffscreenCanvas(w, h);
+    // Pixels are read back with getImageData on every call; a CPU-backed
+    // canvas makes that readback far cheaper.
+    entry = { canvas, ctx: canvas.getContext('2d', { willReadFrequently: true }) };
+    _canvasCache.set(kind, entry);
+  }
+  return entry;
 }
 
-function resizeRgbaWithLetterbox(rgbaBuffer, srcW, srcH, dstW, dstH) {
-  const src = new OffscreenCanvas(srcW, srcH);
-  const srcCtx = src.getContext('2d');
-  srcCtx.putImageData(
-    new ImageData(new Uint8ClampedArray(rgbaBuffer), srcW, srcH),
-    0, 0
-  );
+function getFloatBuffer(length) {
+  let buf = _tensorCache.get(length);
+  if (!buf) {
+    buf = new Float32Array(length);
+    _tensorCache.set(length, buf);
+  }
+  return buf;
+}
+
+/** Turn the incoming image (ImageBitmap, or raw RGBA fallback) into a drawable source. */
+function toDrawable(source, srcW, srcH) {
+  if (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) return source;
+  const { canvas, ctx } = getCanvas('src', srcW, srcH);
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(source), srcW, srcH), 0, 0);
+  return canvas;
+}
+
+/**
+ * Resize the source image from srcW×srcH to dstW×dstH (stretch) using
+ * OffscreenCanvas for hardware-accelerated scaling.
+ */
+function resizeRgba(source, srcW, srcH, dstW, dstH) {
+  const drawable = toDrawable(source, srcW, srcH);
+  const { ctx } = getCanvas('dst', dstW, dstH);
+  ctx.clearRect(0, 0, dstW, dstH);
+  ctx.drawImage(drawable, 0, 0, dstW, dstH);
+  return ctx.getImageData(0, 0, dstW, dstH).data;
+}
+
+function resizeRgbaWithLetterbox(source, srcW, srcH, dstW, dstH) {
+  const drawable = toDrawable(source, srcW, srcH);
 
   const scale = Math.min(dstW / srcW, dstH / srcH);
   const drawW = Math.max(1, Math.round(srcW * scale));
@@ -97,11 +124,10 @@ function resizeRgbaWithLetterbox(rgbaBuffer, srcW, srcH, dstW, dstH) {
   const padX = Math.floor((dstW - drawW) / 2);
   const padY = Math.floor((dstH - drawH) / 2);
 
-  const dst = new OffscreenCanvas(dstW, dstH);
-  const dstCtx = dst.getContext('2d');
+  const { ctx: dstCtx } = getCanvas('dst', dstW, dstH);
   dstCtx.fillStyle = 'black';
   dstCtx.fillRect(0, 0, dstW, dstH);
-  dstCtx.drawImage(src, 0, 0, srcW, srcH, padX, padY, drawW, drawH);
+  dstCtx.drawImage(drawable, 0, 0, srcW, srcH, padX, padY, drawW, drawH);
 
   return {
     rgba: dstCtx.getImageData(0, 0, dstW, dstH).data,
@@ -110,23 +136,24 @@ function resizeRgbaWithLetterbox(rgbaBuffer, srcW, srcH, dstW, dstH) {
 }
 
 /**
- * Convert RGBA Uint8ClampedArray → float32 CHW tensor in BGR channel order.
- * Values remain in the model's expected scale after profile mean/std transform.
+ * Convert RGBA Uint8ClampedArray → float32 CHW tensor in the profile's
+ * channel order, applying the profile mean/std normalisation.
  */
 function rgbaToFloat32Chw(rgba, w, h, profile) {
   const n = w * h;
-  const out = new Float32Array(3 * n);
-  const channelIndices = profile.channelOrder === 'rgb' ? [0, 1, 2] : [2, 1, 0];
-  const mean = profile.mean;
-  const std = profile.std;
-  for (let i = 0; i < n; i++) {
-    const p = i * 4;
-    const c0 = rgba[p + channelIndices[0]];
-    const c1 = rgba[p + channelIndices[1]];
-    const c2 = rgba[p + channelIndices[2]];
-    out[i] = (c0 - mean[0]) / std[0];
-    out[n + i] = (c1 - mean[1]) / std[1];
-    out[2 * n + i] = (c2 - mean[2]) / std[2];
+  const out = getFloatBuffer(3 * n);
+  const rgb = profile.channelOrder === 'rgb';
+  const o0 = rgb ? 0 : 2;
+  const o2 = rgb ? 2 : 0;
+  const [m0, m1, m2] = profile.mean;
+  // Multiply by the reciprocal instead of dividing per pixel.
+  const s0 = 1 / profile.std[0];
+  const s1 = 1 / profile.std[1];
+  const s2 = 1 / profile.std[2];
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    out[i] = (rgba[p + o0] - m0) * s0;
+    out[n + i] = (rgba[p + 1] - m1) * s1;
+    out[2 * n + i] = (rgba[p + o2] - m2) * s2;
   }
   return out;
 }
@@ -135,11 +162,11 @@ function rgbaToFloat32Chw(rgba, w, h, profile) {
  * Build the [1, 3, modelH, modelW] float32 input tensor for a session.
  * Returns tensor + transform metadata for mapping boxes back to original image.
  */
-function buildInputTensor(ort, imageDataBuffer, srcW, srcH, modelW, modelH, profile) {
+function buildInputTensor(ort, source, srcW, srcH, modelW, modelH, profile) {
   let resized;
   let transform;
   if (profile.letterbox) {
-    const lb = resizeRgbaWithLetterbox(imageDataBuffer, srcW, srcH, modelW, modelH);
+    const lb = resizeRgbaWithLetterbox(source, srcW, srcH, modelW, modelH);
     resized = lb.rgba;
     transform = {
       type: 'letterbox',
@@ -148,7 +175,7 @@ function buildInputTensor(ort, imageDataBuffer, srcW, srcH, modelW, modelH, prof
       padY: lb.transform.padY,
     };
   } else {
-    resized = resizeRgba(imageDataBuffer, srcW, srcH, modelW, modelH);
+    resized = resizeRgba(source, srcW, srcH, modelW, modelH);
     transform = {
       type: 'stretch',
       scaleX: srcW / modelW,
@@ -161,7 +188,6 @@ function buildInputTensor(ort, imageDataBuffer, srcW, srcH, modelW, modelH, prof
     transform,
   };
 }
-
 function mapRectFromModel(x, y, w, h, transform, origW, origH) {
   let ox;
   let oy;
@@ -495,7 +521,7 @@ self.addEventListener('message', async (e) => {
 
   // ── detect ────────────────────────────────────────────────────────────────
   if (type === 'detect') {
-    const { modelKey, imageDataBuffer, width, height } = e.data;
+    const { modelKey, imageBitmap, imageDataBuffer, width, height } = e.data;
     try {
       const entry = sessions.get(modelKey);
       if (!entry) throw new Error('Model not loaded: ' + modelKey);
@@ -506,7 +532,7 @@ self.addEventListener('message', async (e) => {
       const runWithProfile = async (activeProfile) => {
         const { tensor, transform } = buildInputTensor(
           ort,
-          imageDataBuffer,
+          imageBitmap ?? imageDataBuffer,
           width,
           height,
           modelW,
@@ -530,6 +556,8 @@ self.addEventListener('message', async (e) => {
       self.postMessage({ type: 'detect-result', id, detections });
     } catch (err) {
       self.postMessage({ type: 'error', id, error: String(err) });
+    } finally {
+      imageBitmap?.close?.();
     }
     return;
   }

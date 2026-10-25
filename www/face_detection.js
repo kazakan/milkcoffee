@@ -160,14 +160,20 @@ async function _ortWorkerCall(msg, transfer = [], timeoutMs = ONNX_LOAD_TIMEOUT_
 function _createOnnxDetectorWrapper(modelKey) {
   return {
     async detect(input) {
-      const imageData = input.getContext('2d').getImageData(0, 0, input.width, input.height);
-      // Transfer the buffer (zero-copy send to worker).
-      const buf = imageData.data.buffer;
-      const result = await _ortWorkerCall(
-        { type: 'detect', modelKey, imageDataBuffer: buf, width: input.width, height: input.height },
-        [buf],
-        ONNX_DETECT_TIMEOUT_MS
-      );
+      const { width, height } = input;
+      let msg;
+      if (typeof createImageBitmap === 'function') {
+        // An ImageBitmap snapshot stays GPU-side and is transferred to the
+        // worker, which draws it straight into the model-sized canvas. This
+        // avoids a full-resolution getImageData() readback + copy on the
+        // main thread (up to ~37 MB for a 3072px detection canvas).
+        const imageBitmap = await createImageBitmap(input);
+        msg = [{ type: 'detect', modelKey, imageBitmap, width, height }, [imageBitmap]];
+      } else {
+        const buf = input.getContext('2d').getImageData(0, 0, width, height).data.buffer;
+        msg = [{ type: 'detect', modelKey, imageDataBuffer: buf, width, height }, [buf]];
+      }
+      const result = await _ortWorkerCall(msg[0], msg[1], ONNX_DETECT_TIMEOUT_MS);
       return { detections: result.detections };
     },
     close() {
@@ -309,12 +315,19 @@ export async function loadFaceDetectors(
 // images while still providing stronger upscaling for tiny-face detection.
 export const DETECTION_MAX_CANVAS_DIM = 3072;
 
-export function createDetectionCanvas(bitmap, width, height, scale = 1) {
+// Final detection-canvas size for a scale pass, after the DETECTION_MAX_CANVAS_DIM cap.
+export function detectionCanvasSize(width, height, scale = 1) {
   const scaledW = Math.max(1, Math.round(width * scale));
   const scaledH = Math.max(1, Math.round(height * scale));
   const factor = Math.min(1, DETECTION_MAX_CANVAS_DIM / Math.max(scaledW, scaledH));
-  const finalW = Math.max(1, Math.round(scaledW * factor));
-  const finalH = Math.max(1, Math.round(scaledH * factor));
+  return {
+    width: Math.max(1, Math.round(scaledW * factor)),
+    height: Math.max(1, Math.round(scaledH * factor)),
+  };
+}
+
+export function createDetectionCanvas(bitmap, width, height, scale = 1) {
+  const { width: finalW, height: finalH } = detectionCanvasSize(width, height, scale);
   const detectionCanvas = document.createElement('canvas');
   detectionCanvas.width = finalW;
   detectionCanvas.height = finalH;
@@ -330,6 +343,21 @@ export function createDetectionTileCanvas(bitmap, tx, ty, tw, th) {
   tileCanvas.height = th;
   tileCanvas.getContext('2d').drawImage(bitmap, tx, ty, tw, th, 0, 0, tw, th);
   return tileCanvas;
+}
+// Tile origins along one axis. Tiles advance by `step`; the final tile is
+// aligned to the far edge so every tile is full-size and no thin sliver tile
+// (fully covered by its neighbour, and too small to detect anything) is run.
+export function tileOrigins(length, tileSize, step) {
+  if (length <= tileSize) return [0];
+  const origins = [];
+  for (let pos = 0; ; pos += step) {
+    if (pos + tileSize >= length) {
+      const last = length - tileSize;
+      if (origins[origins.length - 1] !== last) origins.push(last);
+      return origins;
+    }
+    origins.push(pos);
+  }
 }
 
 export function expandBox(box, imgW, imgH, padding = DETECTION_PADDING) {
@@ -435,8 +463,19 @@ export async function detectFaces({
   let workUnits = 0;
 
   // ── Scale-based full-image detection ─────────────────────────────────────
+  // Scales that end up at the same canvas size after the max-dimension cap
+  // (e.g. 2.5×, 3×, 4× of a 1500px photo all become 3072px) would repeat the
+  // exact same inference, so only the first of each size is run.
+  const seenSizes = new Set();
+  const uniqueScales = scales.filter(scale => {
+    const { width, height } = detectionCanvasSize(imgW, imgH, scale);
+    const key = `${width}x${height}`;
+    if (seenSizes.has(key)) return false;
+    seenSizes.add(key);
+    return true;
+  });
   for (const detector of faceDetectors) {
-    for (const scale of scales) {
+    for (const scale of uniqueScales) {
       const input = createCanvas(bitmap, imgW, imgH, scale);
       const result = await detector.detect(input);
       workUnits++;
@@ -472,8 +511,10 @@ export async function detectFaces({
   // relative to the full image appear at a useful resolution for the model.
   if (tileSize > 0 && (imgW > tileThreshold || imgH > tileThreshold)) {
     const step = Math.max(1, Math.round(tileSize * (1 - tileOverlap)));
-    for (let ty = 0; ty < imgH; ty += step) {
-      for (let tx = 0; tx < imgW; tx += step) {
+    const xs = tileOrigins(imgW, tileSize, step);
+    const ys = tileOrigins(imgH, tileSize, step);
+    for (const ty of ys) {
+      for (const tx of xs) {
         const tw = Math.min(tileSize, imgW - tx);
         const th = Math.min(tileSize, imgH - ty);
         const input = createTileCanvas(bitmap, tx, ty, tw, th);

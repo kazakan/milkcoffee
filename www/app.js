@@ -44,7 +44,10 @@ const METHOD_NAMES = ['mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks'];
 
 // ONNX detectors use fixed internal detection passes. We intentionally do not
 // read user-provided scales/tile fields for these models.
-const ONNX_INTERNAL_SCALES = [1, 1.5, 2];
+// SCRFD letterboxes every input to its fixed model size, so upscaled
+// full-image passes (1.5×, 2×) produce the exact same tensor as 1× and only
+// cost time; extra resolution for small faces comes from the tile passes.
+const ONNX_INTERNAL_SCALES = [1];
 const ONNX_INTERNAL_TILE_SIZE = 512;
 const ONNX_INTERNAL_TILE_OVERLAP = 0.3;
 const ONNX_INTERNAL_TILE_THRESHOLD = 700;
