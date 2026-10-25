@@ -39,8 +39,13 @@ const placeholder  = document.getElementById('canvas-placeholder');
 const overlay      = document.getElementById('loading-overlay');
 const loadingText  = document.getElementById('loading-text');
 
+const shapeSel     = document.getElementById('shape');
+
 const ctx = canvas.getContext('2d');
-const METHOD_NAMES = ['mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks'];
+const METHOD_NAMES = [
+  'mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks',
+  'smooth blur', 'frosted glass', 'halftone',
+];
 
 // ONNX detectors use fixed internal detection passes. We intentionally do not
 // read user-provided scales/tile fields for these models.
@@ -157,7 +162,7 @@ let vision = null;
 // results from a previous detector are never reused.
 let detectorGeneration = 0;
 // Boxes of the last successful run for the current image; lets effect /
-// strength changes re-render instantly without re-detecting.
+// strength / shape changes re-render instantly without re-detecting.
 let lastBoxes = null;
 let lastDetectMs = 0;
 
@@ -217,7 +222,7 @@ strengthSldr.addEventListener('input', () => {
 });
 
 // ─── Live re-render ──────────────────────────────────────────────────────────
-// After a first "Detect & Anonymise", changing the effect or strength
+// After a first "Detect & Anonymise", changing the effect, strength or shape
 // re-applies the effect to the cached face boxes (no re-detection). Slider
 // drags are coalesced to one render per animation frame.
 let rerenderQueued = false;
@@ -238,6 +243,7 @@ function scheduleLiveRerender() {
 }
 
 methodSel.addEventListener('change', scheduleLiveRerender);
+shapeSel?.addEventListener('change', scheduleLiveRerender);
 
 // ─── Initialisation ───────────────────────────────────────────────────────────
 async function init() {
@@ -459,9 +465,10 @@ function renderEffect(boxes, detectMs) {
 
   const method   = parseInt(methodSel.value, 10);
   const strength = strengthSldr.value / 100;
+  const shape    = parseInt(shapeSel?.value ?? '0', 10);
 
   // In-place processing inside WASM (modifies wasmMemory.buffer at wasmPtr).
-  wasmProcess(wasmPtr, w, h, boxesJson, method, strength);
+  wasmProcess(wasmPtr, w, h, boxesJson, method, strength, shape);
 
   // ── Render from WASM buffer (no additional copy) ──────────────────────────
   // Always read wasmMemory.buffer fresh: wasmProcess() may have grown WASM

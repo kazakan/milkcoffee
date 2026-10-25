@@ -23,10 +23,12 @@ export function dealloc(ptr: number, size: number): void;
  *   height   – image height in pixels
  *   boxes_js – JSON array of face bounding boxes:
  *              `[{"x":N,"y":N,"width":N,"height":N}, ...]`
- *   method   – 0 = mosaic, 1 = blur, 2 = solid, 3 = cyber veil, 4 = neon blocks
+ *   method   – 0 = mosaic, 1 = blur, 2 = solid, 3 = cyber veil, 4 = neon blocks,
+ *              5 = smooth blur, 6 = frosted glass, 7 = halftone
  *   strength – 0.0 .. 1.0 (controls block size / blur radius)
+ *   shape    – 0 = rectangle, 1 = feathered ellipse
  */
-export function process(ptr: number, width: number, height: number, boxes_js: string, method: number, strength: number): void;
+export function process(ptr: number, width: number, height: number, boxes_js: string, method: number, strength: number, shape: number): void;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -34,7 +36,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly alloc: (a: number) => number;
     readonly dealloc: (a: number, b: number) => void;
-    readonly process: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly process: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -31,19 +31,22 @@ export function dealloc(ptr, size) {
  *   height   – image height in pixels
  *   boxes_js – JSON array of face bounding boxes:
  *              `[{"x":N,"y":N,"width":N,"height":N}, ...]`
- *   method   – 0 = mosaic, 1 = blur, 2 = solid, 3 = cyber veil, 4 = neon blocks
+ *   method   – 0 = mosaic, 1 = blur, 2 = solid, 3 = cyber veil, 4 = neon blocks,
+ *              5 = smooth blur, 6 = frosted glass, 7 = halftone
  *   strength – 0.0 .. 1.0 (controls block size / blur radius)
+ *   shape    – 0 = rectangle, 1 = feathered ellipse
  * @param {number} ptr
  * @param {number} width
  * @param {number} height
  * @param {string} boxes_js
  * @param {number} method
  * @param {number} strength
+ * @param {number} shape
  */
-export function process(ptr, width, height, boxes_js, method, strength) {
+export function process(ptr, width, height, boxes_js, method, strength, shape) {
     const ptr0 = passStringToWasm0(boxes_js, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
-    wasm.process(ptr, width, height, ptr0, len0, method, strength);
+    wasm.process(ptr, width, height, ptr0, len0, method, strength, shape);
 }
 function __wbg_get_imports() {
     const import0 = {

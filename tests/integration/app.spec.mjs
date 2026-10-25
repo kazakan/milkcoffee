@@ -247,6 +247,9 @@ test('applies every effect method successfully', async ({ page }) => {
     { value: '2', label: 'solid' },
     { value: '3', label: 'cyber veil' },
     { value: '4', label: 'neon blocks' },
+    { value: '5', label: 'smooth blur' },
+    { value: '6', label: 'frosted glass' },
+    { value: '7', label: 'halftone' },
   ];
 
   for (const { value, label } of methods) {
@@ -551,7 +554,7 @@ test('switching to onnx model fetches model data asynchronously before creating 
   expect(loadedName).toContain('scrfd_500m');
 });
 
-// ─── Caching and live re-render ──────────────────────────────────────
+// ─── Shape, caching and live re-render ──────────────────────────────────────
 
 async function readPixel(page, x, y) {
   return page.evaluate(([px, py]) => {
@@ -559,6 +562,25 @@ async function readPixel(page, x, y) {
     return Array.from(ctx.getImageData(px, py, 1, 1).data);
   }, [x, y]);
 }
+
+test('ellipse shape masks the face centre but leaves box corners untouched', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+  await page.evaluate(() => {
+    // Ratio-based so every scale pass maps to the same 4..28 px box.
+    globalThis.__testDetections = [{
+      score: 0.97, originXRatio: 0.125, originYRatio: 0.125, widthRatio: 0.75, heightRatio: 0.75,
+    }];
+  });
+  await page.locator('#method').selectOption('2');
+  await page.locator('#shape').selectOption('1');
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('with solid method');
+
+  expect(await readPixel(page, 16, 16)).toEqual([0, 0, 0, 255]);
+  // The 32×32 test image is pure red; the box corner must keep its colour.
+  expect(await readPixel(page, 4, 4)).toEqual([255, 0, 0, 255]);
+});
 
 test('re-processing the same image reuses cached detections', async ({ page }) => {
   await page.goto('/');
@@ -594,7 +616,7 @@ test('changing effect after processing re-renders without detecting again', asyn
   expect(await readPixel(page, 12, 12)).toEqual([0, 0, 0, 255]);
 
   await page.locator('#strength').fill('20');
-  await page.locator('#method').selectOption('4');
-  await expect(page.locator('#status')).toContainText('with neon blocks method');
+  await page.locator('#method').selectOption('7');
+  await expect(page.locator('#status')).toContainText('with halftone method');
   expect(await page.evaluate(() => globalThis.__detectCalls)).toBe(calls);
 });
