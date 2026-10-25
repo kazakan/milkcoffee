@@ -16,6 +16,7 @@ const MEDIAPIPE_STUB = `
     }
 
     async detect(input) {
+      globalThis.__detectCalls = (globalThis.__detectCalls || 0) + 1;
       const scripted = globalThis.__testDetections;
       if (Array.isArray(scripted)) {
         return {
@@ -548,4 +549,52 @@ test('switching to onnx model fetches model data asynchronously before creating 
   });
   expect(loadedName).not.toContain('http');
   expect(loadedName).toContain('scrfd_500m');
+});
+
+// ─── Caching and live re-render ──────────────────────────────────────
+
+async function readPixel(page, x, y) {
+  return page.evaluate(([px, py]) => {
+    const ctx = document.getElementById('preview').getContext('2d');
+    return Array.from(ctx.getImageData(px, py, 1, 1).data);
+  }, [x, y]);
+}
+
+test('re-processing the same image reuses cached detections', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+  const firstRunCalls = await page.evaluate(() => globalThis.__detectCalls);
+  expect(firstRunCalls).toBeGreaterThan(0);
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('detect 0 ms');
+  expect(await page.evaluate(() => globalThis.__detectCalls)).toBe(firstRunCalls);
+
+  // Changing a detection setting invalidates the cache.
+  await page.locator('details.det-settings > summary').click();
+  await page.locator('#det-score-threshold').fill('0.5');
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+  expect(await page.evaluate(() => globalThis.__detectCalls)).toBeGreaterThan(firstRunCalls);
+});
+
+test('changing effect after processing re-renders without detecting again', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+  await page.locator('#method').selectOption('0');
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('with mosaic method');
+  const calls = await page.evaluate(() => globalThis.__detectCalls);
+
+  await page.locator('#method').selectOption('2');
+  await expect(page.locator('#status')).toContainText('with solid method');
+  expect(await readPixel(page, 12, 12)).toEqual([0, 0, 0, 255]);
+
+  await page.locator('#strength').fill('20');
+  await page.locator('#method').selectOption('4');
+  await expect(page.locator('#status')).toContainText('with neon blocks method');
+  expect(await page.evaluate(() => globalThis.__detectCalls)).toBe(calls);
 });

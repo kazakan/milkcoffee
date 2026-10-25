@@ -17,6 +17,9 @@ Upload a JPG or PNG, detect faces in-browser, and apply anonymisation without up
 | Strength control | 0.00–1.00 slider |
 | Detection controls | Editable scales, threshold, padding, tiling, and presets |
 | ONNX execution | Runs in a worker so inference does not block the main UI thread |
+| Live preview | After the first run, changing the effect or strength re-renders instantly from cached face boxes |
+| Detection cache | Re-processing the same image with the same model and settings skips detection |
+| Timing | Status line reports detection and effect time in ms |
 | Export | Download the processed result as PNG |
 
 ## Architecture
