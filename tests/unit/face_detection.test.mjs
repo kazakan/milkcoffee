@@ -13,8 +13,10 @@ import {
   DETECTION_MAX_CANVAS_DIM,
   createFaceDetectorOptions,
   detectFaces,
+  detectionCanvasSize,
   loadFaceDetectors,
   mergeBoxes,
+  tileOrigins,
 } from '../../www/face_detection.js';
 
 test('detection model list includes mediapipe and scrfd500', () => {
@@ -211,4 +213,79 @@ test('detectFaces skips tile-based detection for small images', async () => {
   });
 
   assert.equal(tileCalls.length, 0, 'tile detection should not run for small images');
+});
+
+test('detectionCanvasSize applies the max-dimension cap', () => {
+  assert.deepEqual(detectionCanvasSize(100, 80, 2), { width: 200, height: 160 });
+  const capped = detectionCanvasSize(2000, 1000, 4);
+  assert.equal(capped.width, DETECTION_MAX_CANVAS_DIM);
+  assert.equal(capped.height, DETECTION_MAX_CANVAS_DIM / 2);
+});
+
+test('detectFaces skips scale passes that collapse to the same capped canvas size', async () => {
+  const sizes = [];
+  const fakeDetector = {
+    async detect(input) {
+      sizes.push(`${input.width}x${input.height}`);
+      return { detections: [] };
+    },
+  };
+
+  await detectFaces({
+    bitmap: {},
+    imgW: 2000,
+    imgH: 1500,
+    faceDetectors: [fakeDetector],
+    // 2×, 3× and 4× all hit the 3072px cap (1.5× = 3000px stays below it).
+    scales: [1, 1.5, 2, 3, 4],
+    createCanvas(_bitmap, width, height, scale) {
+      return detectionCanvasSize(width, height, scale);
+    },
+    tileSize: 0,
+  });
+
+  assert.deepEqual(sizes, ['2000x1500', '3000x2250', '3072x2304']);
+});
+
+test('tileOrigins aligns the last tile to the edge without sliver tiles', () => {
+  assert.deepEqual(tileOrigins(400, 512, 358), [0]);
+  assert.deepEqual(tileOrigins(512, 512, 358), [0]);
+  // Old loop produced 0, 358, 716 (a 154px sliver fully inside tile 358).
+  assert.deepEqual(tileOrigins(870, 512, 358), [0, 358]);
+  assert.deepEqual(tileOrigins(1000, 512, 358), [0, 358, 488]);
+  for (const length of [513, 777, 1999, 4032]) {
+    const origins = tileOrigins(length, 512, 358);
+    assert.equal(origins.at(-1) + 512, length, 'last tile ends at the edge');
+    for (let i = 1; i < origins.length; i++) {
+      assert.ok(origins[i] > origins[i - 1], 'origins strictly increase');
+      assert.ok(origins[i] - origins[i - 1] <= 358, 'no gaps beyond the step');
+    }
+  }
+});
+
+test('detectFaces tiles cover the image with full-size tiles', async () => {
+  const tiles = [];
+  await detectFaces({
+    bitmap: {},
+    imgW: 1000,
+    imgH: 870,
+    faceDetectors: [{ async detect() { return { detections: [] }; } }],
+    scales: [1],
+    createCanvas(_bitmap, width, height) {
+      return { width, height };
+    },
+    createTileCanvas(_bitmap, tx, ty, tw, th) {
+      tiles.push({ tx, ty, tw, th });
+      return { width: tw, height: th };
+    },
+    tileSize: 512,
+    tileOverlap: 0.3,
+    tileThreshold: 640,
+  });
+
+  assert.equal(tiles.length, 3 * 2);
+  for (const t of tiles) {
+    assert.equal(t.tw, 512);
+    assert.equal(t.th, 512);
+  }
 });
