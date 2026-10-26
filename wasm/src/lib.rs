@@ -71,6 +71,17 @@ fn apply_overlay(pixels: &mut [u8], idx: usize, color: [u8; 3], alpha: f32) {
     pixels[idx + 3] = 255;
 }
 
+/// Copy a clamped region out of the image as a tightly packed RGBA buffer.
+fn copy_region(pixels: &[u8], img_w: u32, (x0, y0, x1, y1): (u32, u32, u32, u32)) -> Vec<u8> {
+    let row_bytes = (x1 - x0) as usize * 4;
+    let mut out = Vec::with_capacity(row_bytes * (y1 - y0) as usize);
+    for y in y0..y1 {
+        let start = (y * img_w + x0) as usize * 4;
+        out.extend_from_slice(&pixels[start..start + row_bytes]);
+    }
+    out
+}
+
 /// Apply mosaic (pixelation) to a rectangular region.
 /// `block` is the block size in pixels.
 fn apply_mosaic(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, block: u32) {
@@ -122,56 +133,79 @@ fn apply_mosaic(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw:
     }
 }
 
-/// Apply a simple box blur to a rectangular region.
-/// `radius` is the blur radius in pixels.
+/// Apply a box blur to a rectangular region.
+/// `radius` is the blur radius in pixels; the averaging window is clipped to
+/// the region so no pixels from outside the face box leak in.
+///
+/// Uses running sums (vertical column sums + a horizontal sliding window), so
+/// the cost is O(region area) regardless of radius while producing exactly
+/// the same result as a naive per-pixel window average.
 fn apply_blur(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, radius: u32) {
-    let radius = radius.max(1);
-    let Some((rx, ry, x_end, y_end)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+    let radius = radius.max(1) as usize;
+    let Some(bounds) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
         return;
     };
+    let (x0, y0, x1, y1) = bounds;
+    let region_w = (x1 - x0) as usize;
+    let region_h = (y1 - y0) as usize;
 
-    // We need a temp buffer for the region to avoid reading already-written pixels.
-    let region_w = (x_end - rx) as usize;
-    let region_h = (y_end - ry) as usize;
-    if region_w == 0 || region_h == 0 {
-        return;
+    // Unmodified copy of the region: rows leaving the window are subtracted
+    // from it after the corresponding output rows were already overwritten.
+    let src = copy_region(pixels, img_w, bounds);
+    let row_bytes = region_w * 4;
+    let mut col = vec![0u32; row_bytes];
+
+    let add_row = |col: &mut [u32], ly: usize| {
+        for (c, &v) in col.iter_mut().zip(&src[ly * row_bytes..(ly + 1) * row_bytes]) {
+            *c += v as u32;
+        }
+    };
+    let sub_row = |col: &mut [u32], ly: usize| {
+        for (c, &v) in col.iter_mut().zip(&src[ly * row_bytes..(ly + 1) * row_bytes]) {
+            *c -= v as u32;
+        }
+    };
+
+    for ly in 0..radius.min(region_h) {
+        add_row(&mut col, ly);
     }
-    let mut tmp = vec![0u8; region_w * region_h * 4];
 
-    for py in ry..y_end {
-        for px in rx..x_end {
-            let x0 = (px as i32 - radius as i32).max(rx as i32) as u32;
-            let x1 = (px + radius + 1).min(x_end);
-            let y0 = (py as i32 - radius as i32).max(ry as i32) as u32;
-            let y1 = (py + radius + 1).min(y_end);
-            let count = ((x1 - x0) * (y1 - y0)) as u32;
-            let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
-            for sy in y0..y1 {
-                for sx in x0..x1 {
-                    let idx = (sy * img_w + sx) as usize * 4;
-                    r += pixels[idx] as u32;
-                    g += pixels[idx + 1] as u32;
-                    b += pixels[idx + 2] as u32;
-                    a += pixels[idx + 3] as u32;
+    for ly in 0..region_h {
+        if ly + radius < region_h {
+            add_row(&mut col, ly + radius);
+        }
+        let count_y = ((ly + radius).min(region_h - 1) - ly.saturating_sub(radius) + 1) as u64;
+
+        let mut sum = [0u64; 4];
+        for lx in 0..radius.min(region_w) {
+            for ch in 0..4 {
+                sum[ch] += col[lx * 4 + ch] as u64;
+            }
+        }
+        let dst_row = ((y0 as usize + ly) * img_w as usize + x0 as usize) * 4;
+        for lx in 0..region_w {
+            if lx + radius < region_w {
+                let ci = (lx + radius) * 4;
+                for ch in 0..4 {
+                    sum[ch] += col[ci + ch] as u64;
                 }
             }
-            let ti = ((py - ry) as usize * region_w + (px - rx) as usize) * 4;
-            tmp[ti] = (r / count) as u8;
-            tmp[ti + 1] = (g / count) as u8;
-            tmp[ti + 2] = (b / count) as u8;
-            tmp[ti + 3] = (a / count) as u8;
+            let count_x = ((lx + radius).min(region_w - 1) - lx.saturating_sub(radius) + 1) as u64;
+            let count = count_x * count_y;
+            let di = dst_row + lx * 4;
+            for ch in 0..4 {
+                pixels[di + ch] = (sum[ch] / count) as u8;
+            }
+            if lx >= radius {
+                let ci = (lx - radius) * 4;
+                for ch in 0..4 {
+                    sum[ch] -= col[ci + ch] as u64;
+                }
+            }
         }
-    }
 
-    // Write back.
-    for py in ry..y_end {
-        for px in rx..x_end {
-            let src = ((py - ry) as usize * region_w + (px - rx) as usize) * 4;
-            let dst = (py * img_w + px) as usize * 4;
-            pixels[dst] = tmp[src];
-            pixels[dst + 1] = tmp[src + 1];
-            pixels[dst + 2] = tmp[src + 2];
-            pixels[dst + 3] = tmp[src + 3];
+        if ly >= radius {
+            sub_row(&mut col, ly - radius);
         }
     }
 }
@@ -182,12 +216,10 @@ fn apply_solid(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: 
         return;
     };
     for py in ry..y_end {
-        for px in rx..x_end {
-            let idx = (py * img_w + px) as usize * 4;
-            pixels[idx] = 0;
-            pixels[idx + 1] = 0;
-            pixels[idx + 2] = 0;
-            pixels[idx + 3] = 255;
+        let start = (py * img_w + rx) as usize * 4;
+        let end = (py * img_w + x_end) as usize * 4;
+        for px in pixels[start..end].chunks_exact_mut(4) {
+            px.copy_from_slice(&[0, 0, 0, 255]);
         }
     }
 }
@@ -219,14 +251,18 @@ fn apply_cyber(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: 
         }
     }
 
+    // Border: visit only the edge pixels instead of scanning the whole region.
     let border = 2u32;
     for py in ry..y_end {
-        for px in rx..x_end {
-            let on_border = px < rx + border || px >= x_end.saturating_sub(border)
-                || py < ry + border || py >= y_end.saturating_sub(border);
-            if on_border {
-                let idx = (py * img_w + px) as usize * 4;
-                apply_overlay(pixels, idx, [255, 64, 188], 0.85);
+        let full_row = py < ry + border || py >= y_end.saturating_sub(border);
+        let mut px = rx;
+        while px < x_end {
+            let idx = (py * img_w + px) as usize * 4;
+            apply_overlay(pixels, idx, [255, 64, 188], 0.85);
+            px += 1;
+            if !full_row && px == rx + border {
+                // Jump to the right border strip (never backwards).
+                px = px.max(x_end.saturating_sub(border));
             }
         }
     }
@@ -293,6 +329,10 @@ fn apply_neon(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u
 pub fn process(ptr: u32, width: u32, height: u32, boxes_js: &str, method: u8, strength: f32) {
     let size = (width * height * 4) as usize;
     let pixels = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, size) };
+    process_pixels(pixels, width, height, boxes_js, method, strength);
+}
+
+fn process_pixels(pixels: &mut [u8], width: u32, height: u32, boxes_js: &str, method: u8, strength: f32) {
     let method = Method::from(method);
     let strength = strength.clamp(0.0, 1.0);
 
@@ -618,5 +658,125 @@ mod tests {
         assert_eq!(pixels[0], 255); // (0,0)
         assert_eq!(pixels[1], 255);
         assert_eq!(pixels[2], 255);
+    }
+
+    // ── Fast blur equivalence ─────────────────────────────────────────────────
+
+    fn noisy_pixels(w: u32, h: u32) -> Vec<u8> {
+        (0..(w * h * 4) as usize).map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 24) as u8).collect()
+    }
+
+    /// The original O(area · radius²) blur, kept as a reference implementation.
+    fn naive_blur(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, radius: u32) {
+        let radius = radius.max(1);
+        let Some((rx, ry, x_end, y_end)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+            return;
+        };
+        let src = pixels.to_vec();
+        for py in ry..y_end {
+            for px in rx..x_end {
+                let x0 = px.saturating_sub(radius).max(rx);
+                let x1 = (px + radius + 1).min(x_end);
+                let y0 = py.saturating_sub(radius).max(ry);
+                let y1 = (py + radius + 1).min(y_end);
+                let count = (x1 - x0) * (y1 - y0);
+                let mut sum = [0u32; 4];
+                for sy in y0..y1 {
+                    for sx in x0..x1 {
+                        let idx = (sy * img_w + sx) as usize * 4;
+                        for c in 0..4 {
+                            sum[c] += src[idx + c] as u32;
+                        }
+                    }
+                }
+                let idx = (py * img_w + px) as usize * 4;
+                for c in 0..4 {
+                    pixels[idx + c] = (sum[c] / count) as u8;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn apply_blur_matches_naive_reference() {
+        let (w, h) = (37u32, 29u32);
+        let base = noisy_pixels(w, h);
+        // Includes radii larger than the region and regions clipped by the image.
+        for &(rx, ry, rw, rh, radius) in &[
+            (0, 0, 37, 29, 1),
+            (3, 4, 20, 15, 2),
+            (5, 2, 25, 20, 7),
+            (10, 10, 6, 5, 40),
+            (30, 20, 20, 20, 3),
+            (0, 0, 1, 29, 4),
+        ] {
+            let mut fast = base.clone();
+            let mut slow = base.clone();
+            apply_blur(&mut fast, w, h, rx, ry, rw, rh, radius);
+            naive_blur(&mut slow, w, h, rx, ry, rw, rh, radius);
+            assert_eq!(fast, slow, "mismatch for region ({rx},{ry},{rw},{rh}) radius {radius}");
+        }
+    }
+
+    #[test]
+    fn cyber_border_matches_full_scan() {
+        let (w, h) = (30u32, 26u32);
+        let base = noisy_pixels(w, h);
+        let mut pixels = base.clone();
+        apply_cyber(&mut pixels, w, h, 3, 4, 20, 15, 0.5);
+        // Recompute the expected result with an explicit full-region border scan.
+        let mut expected = base.clone();
+        let (rx, ry, x_end, y_end) = (3u32, 4u32, 23u32, 19u32);
+        apply_cyber_body_only(&mut expected, w, rx, ry, x_end, y_end, 0.5);
+        for py in ry..y_end {
+            for px in rx..x_end {
+                if px < rx + 2 || px >= x_end - 2 || py < ry + 2 || py >= y_end - 2 {
+                    apply_overlay(&mut expected, (py * w + px) as usize * 4, [255, 64, 188], 0.85);
+                }
+            }
+        }
+        assert_eq!(pixels, expected);
+    }
+
+    fn apply_cyber_body_only(pixels: &mut [u8], img_w: u32, rx: u32, ry: u32, x_end: u32, y_end: u32, strength: f32) {
+        let grid = (14.0 - strength * 8.0).round().max(4.0) as u32;
+        let scanline = (6.0 - strength * 3.0).round().max(2.0) as u32;
+        for py in ry..y_end {
+            for px in rx..x_end {
+                let idx = (py * img_w + px) as usize * 4;
+                pixels[idx] = ((pixels[idx] as f32) * 0.12) as u8;
+                pixels[idx + 1] = ((pixels[idx + 1] as f32) * 0.16) as u8;
+                pixels[idx + 2] = ((pixels[idx + 2] as f32) * 0.22) as u8;
+                pixels[idx + 3] = 255;
+                let (lx, ly) = (px - rx, py - ry);
+                if lx % grid == 0 || ly % grid == 0 {
+                    apply_overlay(pixels, idx, [0, 255, 255], 0.78);
+                } else if ly % scanline == 0 {
+                    apply_overlay(pixels, idx, [255, 0, 160], 0.42);
+                } else if ((lx + ly) / scanline) % 2 == 0 {
+                    apply_overlay(pixels, idx, [70, 0, 110], 0.18);
+                }
+            }
+        }
+    }
+
+    // ── Timing harness ───────────────────────────────────────────────────────
+    // Run with: cargo test --release --manifest-path wasm/Cargo.toml -- --ignored --nocapture
+
+    #[test]
+    #[ignore]
+    fn bench_methods() {
+        let (w, h) = (1600u32, 1200u32);
+        let mut base = vec![0u8; (w * h * 4) as usize];
+        for (i, p) in base.iter_mut().enumerate() {
+            *p = ((i * 2654435761usize) >> 13) as u8;
+        }
+        let boxes = r#"[{"x":100,"y":100,"width":500,"height":500},{"x":800,"y":300,"width":300,"height":360}]"#;
+        for method in 0u8..=4 {
+            let mut pixels = base.clone();
+            let t = std::time::Instant::now();
+            process_pixels(&mut pixels, w, h, boxes, method, 0.6);
+            println!("method {method}: {:?}", t.elapsed());
+        }
     }
 }

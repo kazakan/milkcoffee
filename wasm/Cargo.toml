@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 wasm-bindgen = "=0.2.121"
 
 [profile.release]
-opt-level = "s"
+# Speed over size: blur/mosaic loops dominate processing time.
+opt-level = 3
 lto = true
 panic = "abort"
