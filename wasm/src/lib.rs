@@ -25,7 +25,8 @@ pub fn dealloc(ptr: u32, size: u32) {
 
 /// Anonymization methods.
 /// 0 = mosaic (pixelation), 1 = box blur, 2 = solid mask,
-/// 3 = cyber veil, 4 = neon blocks
+/// 3 = cyber veil, 4 = neon blocks, 5 = smooth (gaussian-like) blur,
+/// 6 = frosted glass, 7 = halftone dots
 #[repr(u8)]
 enum Method {
     Mosaic = 0,
@@ -33,6 +34,9 @@ enum Method {
     Solid = 2,
     Cyber = 3,
     Neon = 4,
+    Smooth = 5,
+    Frosted = 6,
+    Halftone = 7,
 }
 
 impl From<u8> for Method {
@@ -42,7 +46,27 @@ impl From<u8> for Method {
             2 => Method::Solid,
             3 => Method::Cyber,
             4 => Method::Neon,
+            5 => Method::Smooth,
+            6 => Method::Frosted,
+            7 => Method::Halftone,
             _ => Method::Mosaic,
+        }
+    }
+}
+
+/// Region shapes. 0 = rectangle (the detected box), 1 = feathered ellipse.
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    Rect = 0,
+    Ellipse = 1,
+}
+
+impl From<u8> for Shape {
+    fn from(v: u8) -> Self {
+        match v {
+            1 => Shape::Ellipse,
+            _ => Shape::Rect,
         }
     }
 }
@@ -210,6 +234,14 @@ fn apply_blur(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u
     }
 }
 
+/// Smooth, gaussian-like blur: three box-blur passes converge to a gaussian
+/// kernel and avoid the blocky "ghost" edges of a single box blur.
+fn apply_smooth_blur(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, radius: u32) {
+    for _ in 0..3 {
+        apply_blur(pixels, img_w, img_h, rx, ry, rw, rh, radius);
+    }
+}
+
 /// Fill a rectangular region with a solid colour (black by default).
 fn apply_solid(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32) {
     let Some((rx, ry, x_end, y_end)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
@@ -315,6 +347,203 @@ fn apply_neon(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u
     }
 }
 
+/// Cheap deterministic 2D hash (no RNG state, same output for same input).
+fn hash2(x: u32, y: u32, seed: u32) -> u32 {
+    let mut h = x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA77) ^ seed.wrapping_mul(0xC2B2_AE3D);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297A_2D39);
+    h ^ (h >> 15)
+}
+
+/// Frosted glass: every pixel takes the colour of a random neighbour within
+/// `spread` pixels (scrambling facial features), then a light blur smooths
+/// the speckle into a textured-glass look.
+fn apply_frosted(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, spread: u32) {
+    let Some(bounds) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+        return;
+    };
+    let (x0, y0, x1, y1) = bounds;
+    let spread = spread.max(1);
+    let region_w = x1 - x0;
+    let region_h = y1 - y0;
+    let src = copy_region(pixels, img_w, bounds);
+    let span = 2 * spread + 1;
+
+    for ly in 0..region_h {
+        for lx in 0..region_w {
+            let h = hash2(lx, ly, 0x5EED);
+            let ox = (h % span) as i64 - spread as i64;
+            let oy = ((h >> 16) % span) as i64 - spread as i64;
+            let sx = (lx as i64 + ox).clamp(0, region_w as i64 - 1) as usize;
+            let sy = (ly as i64 + oy).clamp(0, region_h as i64 - 1) as usize;
+            let si = (sy * region_w as usize + sx) * 4;
+            let di = ((y0 + ly) * img_w + x0 + lx) as usize * 4;
+            pixels[di..di + 3].copy_from_slice(&src[si..si + 3]);
+            pixels[di + 3] = 255;
+        }
+    }
+
+    apply_blur(pixels, img_w, img_h, x0, y0, region_w, region_h, (spread / 3).max(1));
+}
+
+/// Halftone: the region becomes a grid of dots on a paper-white background.
+/// Each dot uses the cell's average colour and grows with the cell's darkness.
+fn apply_halftone(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u32, rh: u32, cell: u32) {
+    let Some((x0, y0, x1, y1)) = region_bounds(img_w, img_h, rx, ry, rw, rh) else {
+        return;
+    };
+    let cell = cell.max(4);
+    let paper = [244u8, 240u8, 228u8];
+
+    let mut cy = y0;
+    while cy < y1 {
+        let ch = (cy + cell).min(y1) - cy;
+        let mut cx = x0;
+        while cx < x1 {
+            let cw = (cx + cell).min(x1) - cx;
+
+            let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+            for py in cy..cy + ch {
+                for px in cx..cx + cw {
+                    let idx = (py * img_w + px) as usize * 4;
+                    r += pixels[idx] as u32;
+                    g += pixels[idx + 1] as u32;
+                    b += pixels[idx + 2] as u32;
+                }
+            }
+            let n = cw * ch;
+            let (r, g, b) = (r / n, g / n, b / n);
+            let luma = (r * 299 + g * 587 + b * 114) / 1000;
+            // Darker cells → bigger dots; sqrt keeps perceived ink coverage linear.
+            let ink = 1.0 - luma as f32 / 255.0;
+            let dot_r = (cell as f32 * 0.5) * (0.25 + 0.95 * ink.sqrt());
+            let dot = [(r * 3 / 4) as u8, (g * 3 / 4) as u8, (b * 3 / 4) as u8];
+            let centre_x = cx as f32 + cell as f32 * 0.5;
+            let centre_y = cy as f32 + cell as f32 * 0.5;
+
+            for py in cy..cy + ch {
+                for px in cx..cx + cw {
+                    let dx = px as f32 + 0.5 - centre_x;
+                    let dy = py as f32 + 0.5 - centre_y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    // One-pixel anti-aliased dot edge.
+                    let coverage = (dot_r - dist + 0.5).clamp(0.0, 1.0);
+                    let idx = (py * img_w + px) as usize * 4;
+                    for c in 0..3 {
+                        pixels[idx + c] = blend_channel(paper[c], dot[c], coverage);
+                    }
+                    pixels[idx + 3] = 255;
+                }
+            }
+
+            cx += cell;
+        }
+        cy += cell;
+    }
+}
+
+/// Grow a box by `frac` of its size on every side (used by the ellipse shape so
+/// the inscribed ellipse still covers the whole face, not just its centre).
+fn grow_box(img_w: u32, img_h: u32, (x, y, w, h): (u32, u32, u32, u32), frac: f32) -> (u32, u32, u32, u32) {
+    let gx = (w as f32 * frac).round() as u32;
+    let gy = (h as f32 * frac).round() as u32;
+    let nx = x.saturating_sub(gx);
+    let ny = y.saturating_sub(gy);
+    let right = x.saturating_add(w).saturating_add(gx).min(img_w);
+    let bottom = y.saturating_add(h).saturating_add(gy).min(img_h);
+    (nx, ny, right.saturating_sub(nx), bottom.saturating_sub(ny))
+}
+
+/// Restore original pixels outside the ellipse centred on the face box with
+/// semi-axes grown by `grow`, using a soft feathered rim so the effect blends
+/// into its surroundings. The ellipse is computed from the unclipped face box,
+/// so faces cut off by the image border stay centred correctly.
+fn mask_to_ellipse(
+    pixels: &mut [u8],
+    original: &[u8],
+    img_w: u32,
+    bounds: (u32, u32, u32, u32),
+    (fx, fy, fw, fh): (u32, u32, u32, u32),
+    grow: f32,
+) {
+    let (x0, y0, x1, y1) = bounds;
+    let region_w = (x1 - x0) as usize;
+    let a = fw as f32 * (0.5 + grow);
+    let b = fh as f32 * (0.5 + grow);
+    if a <= 0.0 || b <= 0.0 {
+        return;
+    }
+    let cx = fx as f32 + fw as f32 * 0.5;
+    let cy = fy as f32 + fh as f32 * 0.5;
+    // Feather band width relative to the ellipse radius (min 1.5px).
+    let feather = (2.0 / a.min(b)).max(0.06).min(0.3);
+    let inner = 1.0 - feather;
+
+    for py in y0..y1 {
+        let ny = (py as f32 + 0.5 - cy) / b;
+        for px in x0..x1 {
+            let nx = (px as f32 + 0.5 - cx) / a;
+            let rho = (nx * nx + ny * ny).sqrt();
+            if rho <= inner {
+                continue;
+            }
+            // keep = how much of the effect stays (1 inside, 0 outside).
+            let keep = if rho >= 1.0 { 0.0 } else { (1.0 - rho) / feather };
+            let di = (py * img_w + px) as usize * 4;
+            let si = ((py - y0) as usize * region_w + (px - x0) as usize) * 4;
+            for c in 0..4 {
+                pixels[di + c] = blend_channel(original[si + c], pixels[di + c], keep);
+            }
+        }
+    }
+}
+
+fn apply_method(pixels: &mut [u8], width: u32, height: u32, (bx, by, bw, bh): (u32, u32, u32, u32), method: &Method, strength: f32) {
+    let min_dim = bw.min(bh);
+    match method {
+        Method::Mosaic => {
+            // block size: 4 .. max_dim * 0.5 mapped by strength
+            let max_block = ((min_dim / 2).max(4)) as f32;
+            let block = (4.0 + strength * (max_block - 4.0)).round() as u32;
+            apply_mosaic(pixels, width, height, bx, by, bw, bh, block);
+        }
+        Method::Blur => {
+            let max_radius = ((min_dim / 4).max(2)) as f32;
+            let radius = (2.0 + strength * (max_radius - 2.0)).round() as u32;
+            apply_blur(pixels, width, height, bx, by, bw, bh, radius);
+        }
+        Method::Solid => {
+            apply_solid(pixels, width, height, bx, by, bw, bh);
+        }
+        Method::Cyber => {
+            apply_cyber(pixels, width, height, bx, by, bw, bh, strength);
+        }
+        Method::Neon => {
+            let max_block = ((min_dim / 3).max(6)) as f32;
+            let block = (6.0 + strength * (max_block - 6.0)).round() as u32;
+            apply_neon(pixels, width, height, bx, by, bw, bh, block);
+        }
+        Method::Smooth => {
+            // Three passes multiply the effective radius, so start smaller.
+            let max_radius = ((min_dim / 7).max(2)) as f32;
+            let radius = (2.0 + strength * (max_radius - 2.0)).round() as u32;
+            apply_smooth_blur(pixels, width, height, bx, by, bw, bh, radius);
+        }
+        Method::Frosted => {
+            let max_spread = ((min_dim / 5).max(3)) as f32;
+            let spread = (3.0 + strength * (max_spread - 3.0)).round() as u32;
+            apply_frosted(pixels, width, height, bx, by, bw, bh, spread);
+        }
+        Method::Halftone => {
+            let max_cell = ((min_dim / 4).max(6)) as f32;
+            let cell = (6.0 + strength * (max_cell - 6.0)).round() as u32;
+            apply_halftone(pixels, width, height, bx, by, bw, bh, cell);
+        }
+    }
+}
+
 /// Process the image in-place.
 ///
 /// Parameters:
@@ -323,47 +552,39 @@ fn apply_neon(pixels: &mut [u8], img_w: u32, img_h: u32, rx: u32, ry: u32, rw: u
 ///   height   – image height in pixels
 ///   boxes_js – JSON array of face bounding boxes:
 ///              `[{"x":N,"y":N,"width":N,"height":N}, ...]`
-///   method   – 0 = mosaic, 1 = blur, 2 = solid, 3 = cyber veil, 4 = neon blocks
+///   method   – 0 = mosaic, 1 = blur, 2 = solid, 3 = cyber veil, 4 = neon blocks,
+///              5 = smooth blur, 6 = frosted glass, 7 = halftone
 ///   strength – 0.0 .. 1.0 (controls block size / blur radius)
+///   shape    – 0 = rectangle, 1 = feathered ellipse
 #[wasm_bindgen]
-pub fn process(ptr: u32, width: u32, height: u32, boxes_js: &str, method: u8, strength: f32) {
+pub fn process(ptr: u32, width: u32, height: u32, boxes_js: &str, method: u8, strength: f32, shape: u8) {
     let size = (width * height * 4) as usize;
     let pixels = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, size) };
-    process_pixels(pixels, width, height, boxes_js, method, strength);
+    process_pixels(pixels, width, height, boxes_js, method, strength, shape);
 }
 
-fn process_pixels(pixels: &mut [u8], width: u32, height: u32, boxes_js: &str, method: u8, strength: f32) {
+fn process_pixels(pixels: &mut [u8], width: u32, height: u32, boxes_js: &str, method: u8, strength: f32, shape: u8) {
     let method = Method::from(method);
+    let shape = Shape::from(shape);
     let strength = strength.clamp(0.0, 1.0);
 
     // Parse face boxes from JSON without pulling in serde.
     // Expected format: [{"x":N,"y":N,"width":N,"height":N}, ...]
     let boxes = parse_boxes(boxes_js);
 
-    for (bx, by, bw, bh) in boxes {
-        match method {
-            Method::Mosaic => {
-                // block size: 4 .. max_dim * 0.5 mapped by strength
-                let max_block = ((bw.min(bh) / 2).max(4)) as f32;
-                let block = (4.0 + strength * (max_block - 4.0)).round() as u32;
-                apply_mosaic(pixels, width, height, bx, by, bw, bh, block);
-            }
-            Method::Blur => {
-                let max_radius = ((bw.min(bh) / 4).max(2)) as f32;
-                let radius = (2.0 + strength * (max_radius - 2.0)).round() as u32;
-                apply_blur(pixels, width, height, bx, by, bw, bh, radius);
-            }
-            Method::Solid => {
-                apply_solid(pixels, width, height, bx, by, bw, bh);
-            }
-            Method::Cyber => {
-                apply_cyber(pixels, width, height, bx, by, bw, bh, strength);
-            }
-            Method::Neon => {
-                let max_block = ((bw.min(bh) / 3).max(6)) as f32;
-                let block = (6.0 + strength * (max_block - 6.0)).round() as u32;
-                apply_neon(pixels, width, height, bx, by, bw, bh, block);
-            }
+    for face in boxes {
+        if shape == Shape::Ellipse {
+            // Grow so the inscribed ellipse covers cheeks/chin of a tight box.
+            const GROW: f32 = 0.1;
+            let grown = grow_box(width, height, face, GROW);
+            let Some(bounds) = region_bounds(width, height, grown.0, grown.1, grown.2, grown.3) else {
+                continue;
+            };
+            let original = copy_region(pixels, width, bounds);
+            apply_method(pixels, width, height, grown, &method, strength);
+            mask_to_ellipse(pixels, &original, width, bounds, face, GROW);
+        } else {
+            apply_method(pixels, width, height, face, &method, strength);
         }
     }
 }
@@ -663,7 +884,7 @@ mod tests {
     // ── Fast blur equivalence ─────────────────────────────────────────────────
 
     fn noisy_pixels(w: u32, h: u32) -> Vec<u8> {
-        (0..(w * h * 4) as usize).map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 24) as u8).collect()
+        (0..(w * h * 4) as usize).map(|i| (hash2(i as u32, 7, 1) >> 9) as u8).collect()
     }
 
     /// The original O(area · radius²) blur, kept as a reference implementation.
@@ -718,6 +939,61 @@ mod tests {
         }
     }
 
+    // ── New methods ──────────────────────────────────────────────────────────
+
+    fn outside_untouched(before: &[u8], after: &[u8], w: u32, h: u32, (rx, ry, rw, rh): (u32, u32, u32, u32)) -> bool {
+        (0..h).all(|y| {
+            (0..w).all(|x| {
+                let inside = x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+                let i = (y * w + x) as usize * 4;
+                inside || before[i..i + 4] == after[i..i + 4]
+            })
+        })
+    }
+
+    #[test]
+    fn new_methods_change_region_and_leave_outside_untouched() {
+        let (w, h) = (48u32, 40u32);
+        let base = noisy_pixels(w, h);
+        let face = (8u32, 6u32, 24u32, 22u32);
+        let json = r#"[{"x":8,"y":6,"width":24,"height":22}]"#;
+        for method in 5u8..=7 {
+            let mut pixels = base.clone();
+            process_pixels(&mut pixels, w, h, json, method, 0.7, 0);
+            assert_ne!(pixels, base, "method {method} should modify the face region");
+            assert!(outside_untouched(&base, &pixels, w, h, face), "method {method} leaked outside the box");
+        }
+    }
+
+    #[test]
+    fn smooth_and_frosted_keep_uniform_region_uniform() {
+        let (w, h) = (20u32, 20u32);
+        for method in [5u8, 6u8] {
+            let mut pixels = make_pixels(w, h, 90);
+            for a in pixels.iter_mut().skip(3).step_by(4) {
+                *a = 255;
+            }
+            let original = pixels.clone();
+            process_pixels(&mut pixels, w, h, r#"[{"x":2,"y":2,"width":15,"height":15}]"#, method, 1.0, 0);
+            assert_eq!(pixels, original, "method {method} should not alter a flat colour");
+        }
+    }
+
+    #[test]
+    fn halftone_draws_dots_on_paper() {
+        let (w, h) = (32u32, 32u32);
+        let mut pixels = make_pixels(w, h, 0); // black → largest dots
+        for a in pixels.iter_mut().skip(3).step_by(4) {
+            *a = 255;
+        }
+        apply_halftone(&mut pixels, w, h, 0, 0, w, h, 16);
+        // Cell centre is ink (dark), cell corner is paper (light).
+        let centre = (8 * w + 8) as usize * 4;
+        let corner = 0usize;
+        assert!(pixels[centre] < 40, "dot centre should be dark");
+        assert!(pixels[corner] > 200, "cell corner should be paper-coloured");
+    }
+
     #[test]
     fn cyber_border_matches_full_scan() {
         let (w, h) = (30u32, 26u32);
@@ -760,6 +1036,43 @@ mod tests {
         }
     }
 
+    // ── Ellipse shape ────────────────────────────────────────────────────────
+
+    #[test]
+    fn ellipse_shape_masks_centre_and_spares_corners() {
+        let (w, h) = (60u32, 60u32);
+        let mut pixels = make_pixels(w, h, 255);
+        process_pixels(&mut pixels, w, h, r#"[{"x":10,"y":10,"width":40,"height":40}]"#, 2, 1.0, 1);
+        let at = |x: u32, y: u32| (y * w + x) as usize * 4;
+        // Centre is masked (solid black).
+        assert_eq!(&pixels[at(30, 30)..at(30, 30) + 3], &[0, 0, 0]);
+        // Edge midpoints of the face box are inside the grown ellipse.
+        assert_eq!(&pixels[at(11, 30)..at(11, 30) + 3], &[0, 0, 0]);
+        assert_eq!(&pixels[at(30, 48)..at(30, 48) + 3], &[0, 0, 0]);
+        // Box corners stay untouched.
+        assert_eq!(&pixels[at(10, 10)..at(10, 10) + 4], &[255, 255, 255, 255]);
+        assert_eq!(&pixels[at(49, 49)..at(49, 49) + 4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn ellipse_shape_covers_face_cut_by_image_border() {
+        let (w, h) = (40u32, 40u32);
+        let mut pixels = make_pixels(w, h, 255);
+        // Face box starts at x=0 (face partly outside the frame).
+        process_pixels(&mut pixels, w, h, r#"[{"x":0,"y":10,"width":20,"height":20}]"#, 2, 1.0, 1);
+        let at = |x: u32, y: u32| (y * w + x) as usize * 4;
+        assert_eq!(&pixels[at(0, 20)..at(0, 20) + 3], &[0, 0, 0], "left edge at face centre height must be masked");
+    }
+
+    #[test]
+    fn unknown_shape_falls_back_to_rect() {
+        let (w, h) = (20u32, 20u32);
+        let mut pixels = make_pixels(w, h, 255);
+        process_pixels(&mut pixels, w, h, r#"[{"x":5,"y":5,"width":10,"height":10}]"#, 2, 1.0, 9);
+        let corner = (5 * w + 5) as usize * 4;
+        assert_eq!(&pixels[corner..corner + 3], &[0, 0, 0]);
+    }
+
     // ── Timing harness ───────────────────────────────────────────────────────
     // Run with: cargo test --release --manifest-path wasm/Cargo.toml -- --ignored --nocapture
 
@@ -772,10 +1085,10 @@ mod tests {
             *p = ((i * 2654435761usize) >> 13) as u8;
         }
         let boxes = r#"[{"x":100,"y":100,"width":500,"height":500},{"x":800,"y":300,"width":300,"height":360}]"#;
-        for method in 0u8..=4 {
+        for method in 0u8..=7 {
             let mut pixels = base.clone();
             let t = std::time::Instant::now();
-            process_pixels(&mut pixels, w, h, boxes, method, 0.6);
+            process_pixels(&mut pixels, w, h, boxes, method, 0.6, 0);
             println!("method {method}: {:?}", t.elapsed());
         }
     }

@@ -13,10 +13,14 @@ Upload a JPG or PNG, detect faces in-browser, and apply anonymisation without up
 | Feature | Detail |
 |---|---|
 | Face detection | Selectable detector: MediaPipe (BlazeFace) or SCRFD-500M (ONNX) |
-| Anonymisation | Mosaic, blur, solid mask, cyber veil, neon blocks |
+| Anonymisation | Mosaic, blur, solid mask, cyber veil, neon blocks, smooth blur, frosted glass, halftone dots |
+| Shape | Rectangle, or a feathered ellipse that follows the face outline |
 | Strength control | 0.00–1.00 slider |
 | Detection controls | Editable scales, threshold, padding, tiling, and presets |
 | ONNX execution | Runs in a worker so inference does not block the main UI thread |
+| Live preview | After the first run, changing the effect or strength re-renders instantly from cached face boxes |
+| Detection cache | Re-processing the same image with the same model and settings skips detection |
+| Timing | Status line reports detection and effect time in ms |
 | Export | Download the processed result as PNG |
 
 ## Architecture
@@ -140,6 +144,11 @@ npm test
 | Solid | `apply_solid` | Always fills the region |
 | Cyber veil | `apply_cyber` | Adjusts grid density and scanlines |
 | Neon blocks | `apply_neon` | Block size scales with face size |
+| Smooth blur | `apply_smooth_blur` | Three box passes (gaussian-like); radius scales with face size |
+| Frosted glass | `apply_frosted` | Random pixel scatter + light blur; spread scales with face size |
+| Halftone dots | `apply_halftone` | Dot cell size scales with face size; dot radius follows darkness |
+
+With **Shape → Ellipse**, the effect is applied to the face box grown by 10% per side and then masked to an ellipse centred on the face, with a feathered rim.
 
 ## Detection settings
 

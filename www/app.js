@@ -39,8 +39,13 @@ const placeholder  = document.getElementById('canvas-placeholder');
 const overlay      = document.getElementById('loading-overlay');
 const loadingText  = document.getElementById('loading-text');
 
+const shapeSel     = document.getElementById('shape');
+
 const ctx = canvas.getContext('2d');
-const METHOD_NAMES = ['mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks'];
+const METHOD_NAMES = [
+  'mosaic', 'blur', 'solid', 'cyber veil', 'neon blocks',
+  'smooth blur', 'frosted glass', 'halftone',
+];
 
 // ONNX detectors use fixed internal detection passes. We intentionally do not
 // read user-provided scales/tile fields for these models.
@@ -156,6 +161,13 @@ let wasmPtr      = 0;      // current allocation pointer
 let wasmSize     = 0;      // current allocation byte size
 let mediaPipeModule = null;
 let vision = null;
+// Bumped whenever the active detector instances change, so cached detection
+// results from a previous detector are never reused.
+let detectorGeneration = 0;
+// Boxes of the last successful run for the current image; lets effect /
+// strength / shape changes re-render instantly without re-detecting.
+let lastBoxes = null;
+let lastDetectMs = 0;
 
 window.addEventListener('onnx-progress', event => {
   const { phase } = event.detail || {};
@@ -209,7 +221,32 @@ function syncDetectionInputAvailability() {
 // ─── Strength slider ─────────────────────────────────────────────────────────
 strengthSldr.addEventListener('input', () => {
   strengthVal.textContent = (strengthSldr.value / 100).toFixed(2);
+  scheduleLiveRerender();
 });
+
+// ─── Live re-render ──────────────────────────────────────────────────────────
+// After a first "Detect & Anonymise", changing the effect, strength or shape
+// re-applies the effect to the cached face boxes (no re-detection). Slider
+// drags are coalesced to one render per animation frame.
+let rerenderQueued = false;
+
+function scheduleLiveRerender() {
+  if (!lastBoxes || !currentImage || rerenderQueued || btnProcess.disabled) return;
+  rerenderQueued = true;
+  requestAnimationFrame(() => {
+    rerenderQueued = false;
+    if (!lastBoxes || !currentImage || btnProcess.disabled) return;
+    try {
+      renderEffect(lastBoxes, lastDetectMs);
+    } catch (err) {
+      setStatus('Processing failed: ' + err.message, 'error');
+      console.error(err);
+    }
+  });
+}
+
+methodSel.addEventListener('change', scheduleLiveRerender);
+shapeSel?.addEventListener('change', scheduleLiveRerender);
 
 // ─── Initialisation ───────────────────────────────────────────────────────────
 async function init() {
@@ -223,6 +260,7 @@ async function init() {
 
     // 2. Load MediaPipe Face Detection (CDN).
     faceDetectors = await loadFaceDetector();
+    detectorGeneration++;
 
     setStatus('Ready. Upload an image to begin.', 'ok');
     btnProcess.disabled = false;
@@ -280,6 +318,7 @@ async function reloadFaceDetectorFromSelection() {
 
     const previousDetectors = faceDetectors;
     faceDetectors = newDetectors;
+    detectorGeneration++;
     disposeFaceDetectors(previousDetectors);
     setStatus('Ready. Upload an image to begin.', 'ok');
   } catch (err) {
@@ -292,6 +331,7 @@ async function reloadFaceDetectorFromSelection() {
         const fallbackDetectors = await loadFaceDetector();
         const previousDetectors = faceDetectors;
         faceDetectors = fallbackDetectors;
+        detectorGeneration++;
         disposeFaceDetectors(previousDetectors);
         setStatus(
           'Ready. Upload an image to begin. (ONNX model failed; switched to MediaPipe.)',
@@ -351,7 +391,9 @@ async function loadFile(file) {
     const w = bitmap.width;
     const h = bitmap.height;
 
-    currentImage = { bitmap, width: w, height: h };
+    // pixels + detection cache are filled lazily on first processing.
+    currentImage = { bitmap, width: w, height: h, pixels: null, detection: null };
+    lastBoxes = null;
 
     // Display original image on canvas.
     canvas.width  = w;
@@ -370,9 +412,101 @@ async function loadFile(file) {
 // ─── Process ──────────────────────────────────────────────────────────────────
 btnProcess.addEventListener('click', processImage);
 
+// Raw RGBA pixels of the current image, decoded once and reused by every
+// re-render (the WASM buffer is overwritten in place on each run).
+function getSourcePixels(image) {
+  if (!image.pixels) {
+    const offscreen = new OffscreenCanvas(image.width, image.height);
+    const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
+    offCtx.drawImage(image.bitmap, 0, 0, image.width, image.height);
+    image.pixels = offCtx.getImageData(0, 0, image.width, image.height).data;
+  }
+  return image.pixels;
+}
+
+function buildDetectionParams(detSettings) {
+  const useOnnxBuiltInSettings = getSelectedDetectionModel()?.runtime === 'onnx';
+  // SCRFD ignores user scale/tile controls and uses internal defaults
+  // tuned for better tiny-face recall than strict single-pass inference.
+  return {
+    scales: useOnnxBuiltInSettings ? ONNX_INTERNAL_SCALES : detSettings.scales,
+    scoreThreshold: detSettings.scoreThreshold,
+    padding: detSettings.padding,
+    tileSize: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_SIZE : detSettings.tileSize,
+    tileOverlap: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_OVERLAP : detSettings.tileOverlap,
+    tileThreshold: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_THRESHOLD : detSettings.tileThreshold,
+  };
+}
+
+// Copies the source pixels into WASM memory, applies the selected effect to
+// `boxes` in place and draws the result. Returns the effect time in ms.
+function renderEffect(boxes, detectMs) {
+  const { width: w, height: h } = currentImage;
+  const byteSize = w * h * 4;
+  const t0 = performance.now();
+
+  // Reuse the WASM allocation when the image size is unchanged.
+  if (wasmPtr !== 0 && wasmSize !== byteSize) {
+    dealloc(wasmPtr, wasmSize);
+    wasmPtr  = 0;
+    wasmSize = 0;
+  }
+  if (wasmPtr === 0) {
+    wasmPtr  = alloc(byteSize);
+    wasmSize = byteSize;
+  }
+
+  // ONE allowed copy: decoded pixels → WASM buffer.
+  // The view is created immediately before the copy so it always reflects the
+  // current wasm.memory.buffer (alloc() may have grown WASM memory).
+  new Uint8ClampedArray(wasmMemory.buffer, wasmPtr, byteSize).set(getSourcePixels(currentImage));
+
+  // Build face-box JSON for WASM (no DOM/serde dependency in Rust).
+  const boxesJson = JSON.stringify(
+    boxes.map(b => ({ x: b.x, y: b.y, width: b.width, height: b.height }))
+  );
+
+  const method   = parseInt(methodSel.value, 10);
+  const strength = strengthSldr.value / 100;
+  const shape    = parseInt(shapeSel?.value ?? '0', 10);
+
+  // In-place processing inside WASM (modifies wasmMemory.buffer at wasmPtr).
+  wasmProcess(wasmPtr, w, h, boxesJson, method, strength, shape);
+
+  // ── Render from WASM buffer (no additional copy) ──────────────────────────
+  // Always read wasmMemory.buffer fresh: wasmProcess() may have grown WASM
+  // memory, which replaces the underlying ArrayBuffer object.
+  const resultView = new Uint8ClampedArray(wasmMemory.buffer, wasmPtr, byteSize);
+  const result = new ImageData(resultView, w, h);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width  = w;
+    canvas.height = h;
+  }
+  ctx.putImageData(result, 0, 0);
+  const effectMs = performance.now() - t0;
+
+  const timing = `(detect ${Math.round(detectMs)} ms, effect ${Math.round(effectMs)} ms)`;
+  if (boxes.length === 0) {
+    setStatus(`No faces detected – original image displayed unchanged. ${timing}`, 'ok');
+  } else {
+    setStatus(
+      `Done! ${boxes.length} face(s) anonymised with ${METHOD_NAMES[method] || 'custom'} method. ${timing}`,
+      'ok'
+    );
+  }
+  btnDownload.disabled = false;
+  return effectMs;
+}
+
 async function processImage() {
   if (!currentImage) {
     setStatus('Upload an image first.', 'error');
+    return;
+  }
+
+  const detSettings = readDetectionSettings();
+  if (!detSettings) {
+    setStatus('Invalid detection settings. Please correct the highlighted fields.', 'error');
     return;
   }
 
@@ -382,93 +516,35 @@ async function processImage() {
   setStatus('Detecting faces…');
 
   try {
-    const { bitmap, width: w, height: h } = currentImage;
+    const image = currentImage;
+    const { bitmap, width: w, height: h } = image;
 
-    // ── Step 1: Decode image pixels ──────────────────────────────────────────
-    // Draw to an offscreen canvas to obtain raw RGBA pixels.
-    const offscreen = new OffscreenCanvas(w, h);
-    const offCtx = offscreen.getContext('2d');
-    offCtx.drawImage(bitmap, 0, 0, w, h);
-    const imageData = offCtx.getImageData(0, 0, w, h);
-
-    // ── Step 2: Face detection (JS side) ─────────────────────────────────────
-    const detSettings = readDetectionSettings();
-    if (!detSettings) {
-      setStatus('Invalid detection settings. Please correct the highlighted fields.', 'error');
-      btnProcess.disabled = false;
-      hideOverlay();
-      return;
-    }
-    const selectedModel = getSelectedDetectionModel();
-    const useOnnxBuiltInSettings = selectedModel?.runtime === 'onnx';
-    const boxes = await detectFaces({
-      bitmap,
-      imgW: w,
-      imgH: h,
-      faceDetectors,
-      // SCRFD ignores user scale/tile controls and uses internal defaults
-      // tuned for better tiny-face recall than strict single-pass inference.
-      scales: useOnnxBuiltInSettings ? ONNX_INTERNAL_SCALES : detSettings.scales,
-      scoreThreshold: detSettings.scoreThreshold,
-      padding: detSettings.padding,
-      tileSize: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_SIZE : detSettings.tileSize,
-      tileOverlap: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_OVERLAP : detSettings.tileOverlap,
-      tileThreshold: useOnnxBuiltInSettings ? ONNX_INTERNAL_TILE_THRESHOLD : detSettings.tileThreshold,
+    // ── Step 1: Face detection (JS side), cached per image + settings ────────
+    const params = buildDetectionParams(detSettings);
+    const cacheKey = JSON.stringify({
+      model: detModelSelect?.value || DEFAULT_DETECTION_MODEL_ID,
+      generation: detectorGeneration,
+      ...params,
     });
-    const boxCount = boxes.length;
-
-    loadingText.textContent = `Found ${boxCount} face(s). Anonymising…`;
-    setStatus(`Found ${boxCount} face(s). Applying anonymisation…`);
-
-    // ── Step 3: WASM zero-copy processing ────────────────────────────────────
-    const byteSize = w * h * 4;
-
-    // Free any previous allocation.
-    if (wasmPtr !== 0) {
-      dealloc(wasmPtr, wasmSize);
-      wasmPtr  = 0;
-      wasmSize = 0;
-    }
-
-    // Allocate buffer inside WASM memory.
-    wasmPtr  = alloc(byteSize);
-    wasmSize = byteSize;
-
-    // ONE allowed copy: decoded pixels → WASM buffer.
-    // The view is created immediately before the copy so it always reflects the
-    // current wasm.memory.buffer (alloc() may have grown WASM memory).
-    new Uint8ClampedArray(wasmMemory.buffer, wasmPtr, byteSize).set(imageData.data);
-
-    // Build face-box JSON for WASM (no DOM/serde dependency in Rust).
-    const boxesJson = JSON.stringify(
-      boxes.map(b => ({ x: b.x, y: b.y, width: b.width, height: b.height }))
-    );
-
-    const method   = parseInt(methodSel.value, 10);
-    const strength = strengthSldr.value / 100;
-
-    // In-place processing inside WASM (modifies wasmMemory.buffer at wasmPtr).
-    wasmProcess(wasmPtr, w, h, boxesJson, method, strength);
-
-    // ── Step 4: Render from WASM buffer (no additional copy) ─────────────────
-    // Always read wasmMemory.buffer fresh: wasmProcess() may have grown WASM
-    // memory, which replaces the underlying ArrayBuffer object.
-    const resultView = new Uint8ClampedArray(wasmMemory.buffer, wasmPtr, byteSize);
-    const result = new ImageData(resultView, w, h);
-    canvas.width  = w;
-    canvas.height = h;
-    ctx.putImageData(result, 0, 0);
-
-    if (boxCount === 0) {
-      setStatus('No faces detected – original image displayed unchanged.', 'ok');
+    let boxes;
+    let detectMs = 0;
+    if (image.detection?.key === cacheKey) {
+      boxes = image.detection.boxes;
     } else {
-      setStatus(
-        `Done! ${boxCount} face(s) anonymised with ${METHOD_NAMES[method] || 'custom'} method.`,
-        'ok'
-      );
+      const t0 = performance.now();
+      boxes = await detectFaces({ bitmap, imgW: w, imgH: h, faceDetectors, ...params });
+      detectMs = performance.now() - t0;
+      image.detection = { key: cacheKey, boxes };
     }
+    if (image !== currentImage) return; // a new image was loaded meanwhile
 
-    btnDownload.disabled = false;
+    loadingText.textContent = `Found ${boxes.length} face(s). Anonymising…`;
+    setStatus(`Found ${boxes.length} face(s). Applying anonymisation…`);
+
+    // ── Step 2: WASM zero-copy processing + render ───────────────────────────
+    renderEffect(boxes, detectMs);
+    lastBoxes = boxes;
+    lastDetectMs = detectMs;
   } catch (err) {
     setStatus('Processing failed: ' + err.message, 'error');
     console.error(err);
@@ -477,7 +553,6 @@ async function processImage() {
     hideOverlay();
   }
 }
-
 // ─── Download ─────────────────────────────────────────────────────────────────
 btnDownload.addEventListener('click', () => {
   canvas.toBlob(blob => {

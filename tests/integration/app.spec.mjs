@@ -16,6 +16,7 @@ const MEDIAPIPE_STUB = `
     }
 
     async detect(input) {
+      globalThis.__detectCalls = (globalThis.__detectCalls || 0) + 1;
       const scripted = globalThis.__testDetections;
       if (Array.isArray(scripted)) {
         return {
@@ -246,6 +247,9 @@ test('applies every effect method successfully', async ({ page }) => {
     { value: '2', label: 'solid' },
     { value: '3', label: 'cyber veil' },
     { value: '4', label: 'neon blocks' },
+    { value: '5', label: 'smooth blur' },
+    { value: '6', label: 'frosted glass' },
+    { value: '7', label: 'halftone' },
   ];
 
   for (const { value, label } of methods) {
@@ -548,4 +552,71 @@ test('switching to onnx model fetches model data asynchronously before creating 
   });
   expect(loadedName).not.toContain('http');
   expect(loadedName).toContain('scrfd_500m');
+});
+
+// ─── Shape, caching and live re-render ──────────────────────────────────────
+
+async function readPixel(page, x, y) {
+  return page.evaluate(([px, py]) => {
+    const ctx = document.getElementById('preview').getContext('2d');
+    return Array.from(ctx.getImageData(px, py, 1, 1).data);
+  }, [x, y]);
+}
+
+test('ellipse shape masks the face centre but leaves box corners untouched', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+  await page.evaluate(() => {
+    // Ratio-based so every scale pass maps to the same 4..28 px box.
+    globalThis.__testDetections = [{
+      score: 0.97, originXRatio: 0.125, originYRatio: 0.125, widthRatio: 0.75, heightRatio: 0.75,
+    }];
+  });
+  await page.locator('#method').selectOption('2');
+  await page.locator('#shape').selectOption('1');
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('with solid method');
+
+  expect(await readPixel(page, 16, 16)).toEqual([0, 0, 0, 255]);
+  // The 32×32 test image is pure red; the box corner must keep its colour.
+  expect(await readPixel(page, 4, 4)).toEqual([255, 0, 0, 255]);
+});
+
+test('re-processing the same image reuses cached detections', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+  const firstRunCalls = await page.evaluate(() => globalThis.__detectCalls);
+  expect(firstRunCalls).toBeGreaterThan(0);
+
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('detect 0 ms');
+  expect(await page.evaluate(() => globalThis.__detectCalls)).toBe(firstRunCalls);
+
+  // Changing a detection setting invalidates the cache.
+  await page.locator('details.det-settings > summary').click();
+  await page.locator('#det-score-threshold').fill('0.5');
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('face(s) anonymised');
+  expect(await page.evaluate(() => globalThis.__detectCalls)).toBeGreaterThan(firstRunCalls);
+});
+
+test('changing effect after processing re-renders without detecting again', async ({ page }) => {
+  await page.goto('/');
+  await uploadPng(page);
+  await page.locator('#method').selectOption('0');
+  await page.locator('#btn-process').click();
+  await expect(page.locator('#status')).toContainText('with mosaic method');
+  const calls = await page.evaluate(() => globalThis.__detectCalls);
+
+  await page.locator('#method').selectOption('2');
+  await expect(page.locator('#status')).toContainText('with solid method');
+  expect(await readPixel(page, 12, 12)).toEqual([0, 0, 0, 255]);
+
+  await page.locator('#strength').fill('20');
+  await page.locator('#method').selectOption('7');
+  await expect(page.locator('#status')).toContainText('with halftone method');
+  expect(await page.evaluate(() => globalThis.__detectCalls)).toBe(calls);
 });
