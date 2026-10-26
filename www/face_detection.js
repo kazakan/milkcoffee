@@ -393,19 +393,40 @@ function yieldToEventLoop() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-export function intersectionOverUnion(a, b) {
-  const x1 = Math.max(a.x, b.x);
-  const y1 = Math.max(a.y, b.y);
-  const x2 = Math.min(a.x + a.width, b.x + b.width);
-  const y2 = Math.min(a.y + a.height, b.y + b.height);
-  const overlapW = Math.max(0, x2 - x1);
-  const overlapH = Math.max(0, y2 - y1);
-  const intersection = overlapW * overlapH;
+function intersectionArea(a, b) {
+  const overlapW = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+  const overlapH = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+  return overlapW * overlapH;
+}
 
+export function intersectionOverUnion(a, b) {
+  const intersection = intersectionArea(a, b);
   if (intersection === 0) return 0;
 
   const union = a.width * a.height + b.width * b.height - intersection;
   return union > 0 ? intersection / union : 0;
+}
+
+// Fraction of the smaller box that lies inside the other one: 1 when one box
+// is fully nested in the other, however different their sizes are.
+export function intersectionOverSmaller(a, b) {
+  const intersection = intersectionArea(a, b);
+  if (intersection === 0) return 0;
+
+  const smaller = Math.min(a.width * a.height, b.width * b.height);
+  return smaller > 0 ? intersection / smaller : 0;
+}
+
+export const MERGE_IOU_THRESHOLD = 0.3;
+// Detections of one face from different scales/tiles are often nested (a tight
+// box inside a looser one) and then have a low IoU, so containment is checked
+// as well.
+export const MERGE_CONTAINMENT_THRESHOLD = 0.6;
+
+// Whether two detections should be treated as the same face.
+export function isSameFace(a, b) {
+  return intersectionOverUnion(a, b) >= MERGE_IOU_THRESHOLD
+    || intersectionOverSmaller(a, b) >= MERGE_CONTAINMENT_THRESHOLD;
 }
 
 export function mergeBoxes(boxes, imgW, imgH, padding = DETECTION_PADDING) {
@@ -419,7 +440,7 @@ export function mergeBoxes(boxes, imgW, imgH, padding = DETECTION_PADDING) {
       didMerge = false;
       for (let i = 0; i < merged.length; i++) {
         const other = merged[i];
-        if (intersectionOverUnion(current, other) >= 0.3) {
+        if (isSameFace(current, other)) {
           const x = Math.min(current.x, other.x);
           const y = Math.min(current.y, other.y);
           const right = Math.max(current.x + current.width, other.x + other.width);

@@ -11,9 +11,13 @@ import {
   DETECTION_TILE_SIZE,
   DETECTION_TILE_THRESHOLD,
   DETECTION_MAX_CANVAS_DIM,
+  MERGE_CONTAINMENT_THRESHOLD,
   createFaceDetectorOptions,
   detectFaces,
   detectionCanvasSize,
+  intersectionOverSmaller,
+  intersectionOverUnion,
+  isSameFace,
   loadFaceDetectors,
   mergeBoxes,
   tileOrigins,
@@ -82,6 +86,50 @@ test('mergeBoxes merges overlaps and clamps expanded bounds', () => {
   assert.equal(merged.length, 2);
   assert.deepEqual(merged[0], { x: 10, y: 10, width: 26, height: 22 });
   assert.deepEqual(merged[1], { x: 92, y: 92, width: 8, height: 8 });
+});
+
+test('intersectionOverSmaller is 1 for nested boxes and 0 for disjoint ones', () => {
+  const outer = { x: 0, y: 0, width: 100, height: 100 };
+  const inner = { x: 40, y: 40, width: 20, height: 20 };
+  assert.equal(intersectionOverSmaller(outer, inner), 1);
+  assert.equal(intersectionOverSmaller(inner, outer), 1);
+  assert.equal(intersectionOverSmaller(outer, { x: 200, y: 0, width: 10, height: 10 }), 0);
+  assert.ok(intersectionOverUnion(outer, inner) < 0.3, 'nested boxes of different size have a low IoU');
+});
+
+test('mergeBoxes merges a small box nested inside a larger one', () => {
+  // Same face found by a tile pass (tight box) and a scale pass (loose box),
+  // as seen on a real group photo with SCRFD.
+  const merged = mergeBoxes(
+    [
+      { x: 2977, y: 943, width: 249, height: 307 },
+      { x: 2988, y: 1087, width: 181, height: 125 },
+    ],
+    3840,
+    3072
+  );
+  assert.deepEqual(merged, [{ x: 2977, y: 943, width: 249, height: 307 }]);
+});
+
+test('mergeBoxes keeps neighbouring faces that only touch apart', () => {
+  const merged = mergeBoxes(
+    [
+      { x: 0, y: 0, width: 50, height: 50 },
+      { x: 40, y: 0, width: 50, height: 50 }, // 20% of its area overlaps the first
+      { x: 100, y: 10, width: 20, height: 20 },
+    ],
+    200,
+    200
+  );
+  assert.equal(merged.length, 3);
+});
+
+test('isSameFace uses IoU or containment', () => {
+  const a = { x: 0, y: 0, width: 10, height: 10 };
+  assert.ok(isSameFace(a, { x: 2, y: 0, width: 10, height: 10 }), 'high IoU');
+  assert.ok(isSameFace(a, { x: 3, y: 3, width: 4, height: 4 }), 'nested');
+  assert.ok(!isSameFace(a, { x: 8, y: 8, width: 10, height: 10 }), 'corner overlap only');
+  assert.ok(MERGE_CONTAINMENT_THRESHOLD > 0.5 && MERGE_CONTAINMENT_THRESHOLD < 1);
 });
 
 test('detectFaces normalizes scaled detections and filters low-confidence hits', async () => {
