@@ -464,6 +464,42 @@ export function mergeBoxes(boxes, imgW, imgH, padding = DETECTION_PADDING) {
   return merged;
 }
 
+// A box must hold at least this many separate faces to count as a group box.
+export const GROUP_BOX_MIN_FACES = 2;
+// A contained face must lie (almost) entirely inside the box and be at most
+// a quarter of its area.
+const GROUP_BOX_CONTAINMENT = 0.9;
+const GROUP_BOX_MAX_FACE_AREA = 0.25;
+
+// Drops detections that are not one face but a box around several people.
+// MediaPipe's full-image pass occasionally returns such a box, and since the
+// merge step joins nested boxes it would swallow every face inside it.
+//
+// A box is dropped only when it contains GROUP_BOX_MIN_FACES or more separate,
+// much smaller detections that each scored at least as high as the box.
+// The faces inside stay covered by their own boxes.
+export function removeGroupBoxes(detections) {
+  return detections.filter(box => {
+    const boxArea = box.width * box.height;
+    const boxScore = box.score ?? 1;
+    const inside = detections
+      .filter(other => other !== box
+        && other.width * other.height <= boxArea * GROUP_BOX_MAX_FACE_AREA
+        && (other.score ?? 1) >= boxScore
+        && intersectionOverSmaller(box, other) >= GROUP_BOX_CONTAINMENT)
+      .sort((a, b) => (b.score ?? 1) - (a.score ?? 1));
+
+    const faces = [];
+    for (const candidate of inside) {
+      if (!faces.some(face => isSameFace(face, candidate))) {
+        faces.push(candidate);
+        if (faces.length >= GROUP_BOX_MIN_FACES) return false;
+      }
+    }
+    return true;
+  });
+}
+
 export async function detectFaces({
   bitmap,
   imgW,
@@ -522,7 +558,7 @@ export async function detectFaces({
           height: Math.round(bb.height / effectiveScaleY),
         }, imgW, imgH);
         if (clamped.width <= 0 || clamped.height <= 0) continue;
-        detections.push(clamped);
+        detections.push({ ...clamped, score });
       }
     }
   }
@@ -556,12 +592,12 @@ export async function detectFaces({
               height: Math.round(bb.height),
             }, imgW, imgH);
             if (clamped.width <= 0 || clamped.height <= 0) continue;
-            detections.push(clamped);
+            detections.push({ ...clamped, score });
           }
         }
       }
     }
   }
 
-  return mergeBoxes(detections, imgW, imgH, padding).filter(box => box.width > 0 && box.height > 0);
+  return mergeBoxes(removeGroupBoxes(detections), imgW, imgH, padding).filter(box => box.width > 0 && box.height > 0);
 }

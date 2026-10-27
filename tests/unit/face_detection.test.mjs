@@ -20,6 +20,7 @@ import {
   isSameFace,
   loadFaceDetectors,
   mergeBoxes,
+  removeGroupBoxes,
   tileOrigins,
 } from '../../www/face_detection.js';
 
@@ -122,6 +123,82 @@ test('mergeBoxes keeps neighbouring faces that only touch apart', () => {
     200
   );
   assert.equal(merged.length, 3);
+});
+
+// Raw MediaPipe detections from a real 3840×3072 group photo (STS-51L crew):
+// one 1925 px box around five people plus their own face boxes.
+const GROUP_PHOTO_DETECTIONS = [
+  { x: 739, y: 0, width: 1925, height: 1925, score: 0.717 },
+  { x: 993, y: 1527, width: 283, height: 283, score: 0.835 },
+  { x: 2009, y: 1462, width: 276, height: 276, score: 0.916 },
+  { x: 1364, y: 990, width: 229, height: 229, score: 0.935 },
+  { x: 1432, y: 981, width: 234, height: 234, score: 0.534 },
+  { x: 2164, y: 819, width: 253, height: 253, score: 0.916 },
+  { x: 496, y: 1096, width: 267, height: 267, score: 0.911 },
+];
+
+test('removeGroupBoxes drops a box that contains several faces', () => {
+  const kept = removeGroupBoxes(GROUP_PHOTO_DETECTIONS);
+  assert.deepEqual(kept, GROUP_PHOTO_DETECTIONS.slice(1));
+});
+
+test('removeGroupBoxes keeps a close-up face with one smaller duplicate inside', () => {
+  const detections = [
+    { x: 100, y: 100, width: 800, height: 800, score: 0.95 },
+    { x: 300, y: 300, width: 300, height: 300, score: 0.97 },
+  ];
+  assert.deepEqual(removeGroupBoxes(detections), detections);
+});
+
+test('removeGroupBoxes counts duplicates of one face only once', () => {
+  const detections = [
+    { x: 0, y: 0, width: 1000, height: 1000, score: 0.8 },
+    { x: 200, y: 200, width: 200, height: 200, score: 0.9 },
+    { x: 210, y: 205, width: 190, height: 200, score: 0.9 },
+    { x: 220, y: 220, width: 100, height: 100, score: 0.9 }, // nested in the first
+  ];
+  assert.deepEqual(removeGroupBoxes(detections), detections);
+});
+
+test('removeGroupBoxes keeps a confident face over weaker false hits inside it', () => {
+  // e.g. eyes picked up as tiny faces: they scored lower than the real face.
+  const detections = [
+    { x: 0, y: 0, width: 600, height: 600, score: 0.96 },
+    { x: 150, y: 200, width: 80, height: 80, score: 0.4 },
+    { x: 370, y: 200, width: 80, height: 80, score: 0.45 },
+  ];
+  assert.deepEqual(removeGroupBoxes(detections), detections);
+});
+
+test('removeGroupBoxes ignores boxes only partly inside', () => {
+  const detections = [
+    { x: 0, y: 0, width: 400, height: 400, score: 0.5 },
+    { x: 350, y: 50, width: 100, height: 100, score: 0.9 },
+    { x: 350, y: 250, width: 100, height: 100, score: 0.9 },
+  ];
+  assert.deepEqual(removeGroupBoxes(detections), detections);
+});
+
+test('detectFaces drops a group box and keeps the faces inside it', async () => {
+  const toDetection = ({ x, y, width, height, score }) => ({
+    categories: [{ score }],
+    boundingBox: { originX: x, originY: y, width, height },
+  });
+  const boxes = await detectFaces({
+    bitmap: {},
+    imgW: 3840,
+    imgH: 3072,
+    faceDetectors: [{ detect: async () => ({ detections: GROUP_PHOTO_DETECTIONS.map(toDetection) }) }],
+    scales: [1],
+    tileSize: 0,
+    createCanvas: (_bitmap, width, height) => ({ width, height }),
+  });
+
+  assert.equal(boxes.length, 5, 'the two overlapping boxes of one face merge');
+  for (const box of boxes) {
+    assert.ok(box.width < 400, `no group-sized box left: ${JSON.stringify(box)}`);
+    assert.equal(box.score, undefined, 'scores stay internal');
+  }
 });
 
 test('isSameFace uses IoU or containment', () => {
